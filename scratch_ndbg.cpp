@@ -151,6 +151,24 @@ int main(int argc, char** argv) {
                                              (unsigned long long)xh[i].High, (unsigned long long)xh[i].Low);
                         }
                         std::fprintf(stderr, "\n");
+                        // At the wcslen "done" point, also log the measured wide
+                        // string by CONTENT (r8=start), for a desync-robust diff.
+                        if (rip - dllBase == 0x204b6f3ULL) {
+                            uint64_t s = ctx.R8; unsigned char wb[130]={0}; SIZE_T g=0;
+                            ReadProcessMemory(hProc,(void*)s,wb,130,&g);
+                            std::fprintf(stderr, "WSTR r8=%llx \"", (unsigned long long)s);
+                            for (int k=0;k<64;k++){unsigned c=wb[k*2]; if(c==0&&wb[k*2+1]==0)break;
+                                std::fprintf(stderr,"%c",(c>=32&&c<127)?(int)c:'.');}
+                            std::fprintf(stderr, "\"\n");
+                        }
+                        if (rip - dllBase == 0x14ed076ULL) {
+                            uint64_t s = ctx.Rbx; unsigned char wb[82]={0}; SIZE_T g=0;
+                            ReadProcessMemory(hProc,(void*)s,wb,82,&g);
+                            std::fprintf(stderr, "STOI rbx=%llx \"", (unsigned long long)s);
+                            for (int k=0;k<40;k++){unsigned c=wb[k*2]; if(c==0&&wb[k*2+1]==0)break;
+                                std::fprintf(stderr,"%c",(c>=32&&c<127)?(int)c:'.');}
+                            std::fprintf(stderr, "\"\n");
+                        }
                         --traceLeft;
                     }
                     if (traceLeft > 0 && --stepCap > 0) {

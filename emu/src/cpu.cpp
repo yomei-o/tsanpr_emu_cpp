@@ -1284,6 +1284,22 @@ void Cpu::step() {
                     std::fprintf(stderr, " x%d=%016llx%016llx", i,
                                  (unsigned long long)xmm[i].q[1], (unsigned long long)xmm[i].q[0]);
             std::fprintf(stderr, "\n");
+            if (start == 0x14214b6f3ull) {  // wcslen "done": log the measured string
+                uint64_t s = regs[8];
+                std::fprintf(stderr, "WSTR r8=%llx \"", (unsigned long long)s);
+                for (int k = 0; k < 64; ++k) { unsigned c=(unsigned)mem_.read_sized(s+k*2,1);
+                    unsigned c2=(unsigned)mem_.read_sized(s+k*2+1,1); if(c==0&&c2==0)break;
+                    std::fprintf(stderr, "%c", (c>=32&&c<127)?(int)c:'.'); }
+                std::fprintf(stderr, "\"\n");
+            }
+            if (start == 0x1415ed076ull) {  // stoi's wcstol call: log the token (rbx)
+                uint64_t s = regs[RBX];
+                std::fprintf(stderr, "STOI rbx=%llx \"", (unsigned long long)s);
+                for (int k = 0; k < 40; ++k) { unsigned c=(unsigned)mem_.read_sized(s+k*2,1);
+                    unsigned c2=(unsigned)mem_.read_sized(s+k*2+1,1); if(c==0&&c2==0)break;
+                    std::fprintf(stderr, "%c", (c>=32&&c<127)?(int)c:'.'); }
+                std::fprintf(stderr, "\"\n");
+            }
             if (left == 0) armed = false;
         }
     }
