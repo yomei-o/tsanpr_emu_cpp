@@ -1280,7 +1280,7 @@ void Cpu::step() {
             std::fprintf(stderr, "IT %llx", (unsigned long long)(start - 0x140100000ull));
             for (int i = 0; i < 16; ++i) std::fprintf(stderr, " %llx", (unsigned long long)regs[i]);
             if (std::getenv("EMU_ITRACE_XMM"))
-                for (int i = 0; i < 8; ++i)
+                for (int i = 0; i < 16; ++i)
                     std::fprintf(stderr, " x%d=%016llx%016llx", i,
                                  (unsigned long long)xmm[i].q[1], (unsigned long long)xmm[i].q[0]);
             std::fprintf(stderr, "\n");

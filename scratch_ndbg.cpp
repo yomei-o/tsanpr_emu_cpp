@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
                         for (int i = 0; i < 16; ++i) std::fprintf(stderr, " %llx", (unsigned long long)r[i]);
                         if (getenv("NDBG_XMM")) {
                             M128A* xh = &ctx.Xmm0;
-                            for (int i = 0; i < 8; ++i)
+                            for (int i = 0; i < 16; ++i)
                                 std::fprintf(stderr, " x%d=%016llx%016llx", i,
                                              (unsigned long long)xh[i].High, (unsigned long long)xh[i].Low);
                         }
