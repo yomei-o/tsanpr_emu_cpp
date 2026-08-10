@@ -1331,9 +1331,46 @@ void Cpu::step() {
                 std::fprintf(stderr, "%c", (c >= 32 && c < 127) ? (int)c : '.');
             }
             std::fprintf(stderr, "\"\n");
+            // Walk the stack for DLL-code return addresses to reveal the caller
+            // chain that led to this stoi.
+            std::fprintf(stderr, "  callers:");
+            int shown = 0;
+            for (uint64_t off = 0; off < 0x600 && shown < 8; off += 8) {
+                uint64_t v = mem_.read64(regs[RSP] + off);
+                if (v >= 0x140101000ull && v < 0x143000000ull) {
+                    std::fprintf(stderr, " %llx", (unsigned long long)(v - 0x140100000ull));
+                    ++shown;
+                }
+            }
+            std::fprintf(stderr, "\n");
         } catch (...) {
             std::fprintf(stderr, "[stoiobj] obj=%llx unreadable\n", (unsigned long long)obj);
         }
+    }
+
+    // EMU_VALSRC: at the gate-2 validation call into the tokenizer helper
+    // (RVA 0x14A6EAF: `call 0x14A4F50`, rcx=r12=input object/source), dump rcx
+    // as a candidate std::wstring and also its first fields, to see the source
+    // string whose 2nd token comes out empty in the emulator.
+    if (std::getenv("EMU_VALSRC") && start == 0x1415a6eafull) {
+        uint64_t o = regs[RCX];
+        try {
+            std::fprintf(stderr, "[valsrc] rcx=%llx  fields:", (unsigned long long)o);
+            for (int off = 0; off < 0x40; off += 8)
+                std::fprintf(stderr, " +%x=%llx", off, (unsigned long long)mem_.read64(o + off));
+            std::fprintf(stderr, "\n");
+            // interpret rcx as a std::wstring
+            uint64_t size = mem_.read64(o + 0x10), cap = mem_.read64(o + 0x18);
+            uint64_t data = (cap <= 7) ? o : mem_.read64(o);
+            std::fprintf(stderr, "[valsrc] as-wstring size=%llu cap=%llu data@%llx \"",
+                         (unsigned long long)size, (unsigned long long)cap,
+                         (unsigned long long)data);
+            for (uint64_t k = 0; k < size && k < 60; ++k) {
+                unsigned c = (unsigned)mem_.read_sized(data + k * 2, 1);
+                std::fprintf(stderr, "%c", (c >= 32 && c < 127) ? (int)c : '.');
+            }
+            std::fprintf(stderr, "\"\n");
+        } catch (...) { std::fprintf(stderr, "[valsrc] rcx=%llx unreadable\n", (unsigned long long)o); }
     }
 
     // EMU_FORCE_ISA=<val>: overwrite the MSVC CRT __isa_available global

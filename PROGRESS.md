@@ -94,6 +94,46 @@ data-/memory-dependent execution infidelity.
   directly rather than inferring it from register/rip traces. Or obtain the
   fingerprint/validation spec from TS-Solution.
 
+### Refined & partly-corrected picture (latest session)
+
+Dumping the actual `std::wstring` object at the `wcstol` call (`EMU_STOIOBJ` at
+0x14ED076) corrected the earlier read:
+
+- `std::stoi` is called **twice**. #1: size=1 cap=7 inline `"1"` → succeeds.
+  #2: size=0 cap=7 inline `""` → throws. So the DeviceID→`"1"` conversion is
+  **not** the failure (the first token is a correct `"1"` in the emulator too),
+  and it is **not** an SSO size-vs-data mismatch — the 2nd token's wstring is
+  **genuinely empty** (size 0). The empty one is the SECOND token.
+- WMI is **faithful**: with `x86emu -c`, every property the guest reads is
+  correct and non-empty in *both* collection passes — Product `"L140MU"`,
+  SerialNumber `"Not Applicable"`, Name `"11th Gen…i7-1165G7"`, ProcessorId
+  `"BFEBFBFF000806C1"`, DeviceID `"1"` (all VT_BSTR). So the empty token is
+  produced by guest-side string processing, not a missing input.
+- **ISA-alignment breakthrough for diffing.** The first control-flow divergence
+  at 0x204B60C is exactly `cmp __isa_available,5; jbe` — native takes the AVX-512
+  path (=6), the emulator the SSE2 path (=1). Poking native's `__isa_available`→1
+  (`ndbg --trace 14a6eaf 7000 2c34418 1`) puts BOTH on the SSE2 path; the
+  first divergence then moves from aligned step 656 all the way to **step 5391**,
+  and that one is a benign `wcslen` alignment-prologue artifact (`start & 0xf`
+  differs because the string lives at different addresses, so the scalar
+  pre-loop runs a different number of iterations before the SSE body — same final
+  length). All 7 measured strings in the window are byte-identical. So control
+  flow matches; the divergence is a data value, and register diffs on the aligned
+  prefix are swamped by heap-allocator internals (0x206Bxxx) that legitimately
+  differ between the emulator heap and the native heap.
+- Caller chains at the two stoi calls (stack-walk in `EMU_STOIOBJ`): both go
+  through the number-parse helper at **0x14B1796**; the empty (2nd) call has an
+  extra frame ~**0x2066C4D** (an IPP/CRT-region routine). The gate-2 validation
+  helper 0x14A4F50 takes a static descriptor whose embedded `std::wstring` is
+  `"License"` and builds a small (0x90-byte) parse facet from `.rdata` constants.
+- STATE: the empty 2nd token is a subtle data-/heap-dependent execution
+  infidelity that does not surface as any clean register/RVA/measured-string
+  divergence once ISA paths are aligned. Reaching the exact mis-executed
+  instruction needs either byte-level data-flow capture into the token buffer, or
+  the vendor's validation spec. New env probes this session: `EMU_STOIOBJ`
+  (wstring object + caller stack-walk at the wcstol), `EMU_VALSRC` (tokenizer
+  input at 0x14A6EAF).
+
 ## Tools added this session (all reusable)
 
 - `scratch_ndbg.cpp` → `ndbg.exe` — minimal Win32 debugger: breakpoints at
