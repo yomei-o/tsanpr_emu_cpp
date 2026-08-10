@@ -68,7 +68,13 @@ void Emulator::choose_layout() {
         // from the image cannot be reached that way.  A Linux guest's heap
         // follows its image instead, chosen below.
         heap_base_ = 0x0000000150000000ull;
-        heap_limit_ = heap_base_ + (1ull << 30);
+        // ONNX inference (tsanpr's detection model) wants several GiB of guest
+        // heap; the old 1 GiB cap made operator new throw std::bad_alloc partway
+        // through recognition.  Grow it, but stay just under 4 GiB above the image
+        // (0x140000000) so a guest that compresses heap pointers into 32 bits
+        // relative to the image can still reach every heap address.  heap_base is
+        // 0x150000000, so the hard ceiling is 0x240000000; leave 0x10000000 spare.
+        heap_limit_ = 0x0000000230000000ull;  // 3.5 GiB heap
     }
     // A Linux guest grows its heap with brk() starting right after the image.
     if (os() == Os::Linux) {
