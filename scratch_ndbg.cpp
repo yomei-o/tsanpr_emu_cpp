@@ -85,7 +85,9 @@ int main(int argc, char** argv) {
     int totalHits = 0;
     bool tracing = false;          // trace mode active (single-stepping + logging)
     uint64_t traceLeft = traceBudget;
-    uint64_t stepCap = 4000000;    // hard cap on total steps
+    uint64_t stepCap = 40000000;   // hard cap on total steps
+    uint64_t stepoverBp = 0;       // one-shot bp planted to skip a non-DLL excursion
+    uint8_t  stepoverOrig = 0;
     while (WaitForDebugEvent(&ev, INFINITE)) {
         DWORD cont = DBG_CONTINUE;
         switch (ev.dwDebugEventCode) {
@@ -115,6 +117,28 @@ int main(int argc, char** argv) {
                     GetThreadContext(hThread, &ctx);
                     uint64_t rip = ctx.Rip;
                     bool inDll = rip >= dllBase && rip < dllBase + 0x3000000ULL;
+                    // Step over non-DLL excursions (kernel/CRT I/O): single-stepping
+                    // through them can hit millions of instructions. When execution
+                    // leaves the DLL, plant a one-shot breakpoint at the first DLL
+                    // return address on the stack and run at full speed back to it.
+                    if (!inDll && stepoverBp == 0) {
+                        unsigned char sb[0x800]; SIZE_T got = 0; uint64_t ret = 0;
+                        if (ReadProcessMemory(hProc,(void*)ctx.Rsp,sb,sizeof(sb),&got))
+                            for (SIZE_T k=0;k+8<=got;k+=8){uint64_t q;memcpy(&q,sb+k,8);
+                                if(q>=dllBase&&q<dllBase+0x3000000ULL){ret=q;break;}}
+                        if (ret) {
+                            uint8_t o; SIZE_T n;
+                            if (ReadProcessMemory(hProc,(void*)ret,&o,1,&n)) {
+                                stepoverOrig=o; stepoverBp=ret; uint8_t cc=0xCC;
+                                WriteProcessMemory(hProc,(void*)ret,&cc,1,&n);
+                                FlushInstructionCache(hProc,(void*)ret,1);
+                                ctx.EFlags &= ~0x100u; SetThreadContext(hThread,&ctx);
+                                CloseHandle(hThread);
+                                ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE);
+                                continue;
+                            }
+                        }
+                    }
                     if (inDll && traceLeft > 0) {
                         uint64_t r[16] = {ctx.Rax,ctx.Rcx,ctx.Rdx,ctx.Rbx,ctx.Rsp,ctx.Rbp,ctx.Rsi,ctx.Rdi,
                                           ctx.R8,ctx.R9,ctx.R10,ctx.R11,ctx.R12,ctx.R13,ctx.R14,ctx.R15};
@@ -143,6 +167,27 @@ int main(int argc, char** argv) {
                 }
                 if (code == EXCEPTION_BREAKPOINT) {
                     uint64_t addr = (uint64_t)er.ExceptionAddress;
+                    // A one-shot step-over breakpoint: we've run back into the DLL
+                    // after a non-DLL excursion. Restore the byte and resume tracing.
+                    if (tracing && stepoverBp && addr == stepoverBp) {
+                        HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, tid);
+                        CONTEXT ctx{}; ctx.ContextFlags = CONTEXT_FULL; GetThreadContext(hThread,&ctx);
+                        WriteProcessMemory(hProc,(void*)stepoverBp,&stepoverOrig,1,nullptr);
+                        FlushInstructionCache(hProc,(void*)stepoverBp,1);
+                        // Log the return-site instruction so the trace stays aligned
+                        // with the emulator (which logs it as a normal step).
+                        if (traceLeft > 0 && stepoverBp >= dllBase && stepoverBp < dllBase+0x3000000ULL) {
+                            uint64_t r[16]={ctx.Rax,ctx.Rcx,ctx.Rdx,ctx.Rbx,ctx.Rsp,ctx.Rbp,ctx.Rsi,ctx.Rdi,
+                                            ctx.R8,ctx.R9,ctx.R10,ctx.R11,ctx.R12,ctx.R13,ctx.R14,ctx.R15};
+                            std::fprintf(stderr, "IT %llx", (unsigned long long)(stepoverBp - dllBase));
+                            for (int i=0;i<16;i++) std::fprintf(stderr," %llx",(unsigned long long)r[i]);
+                            std::fprintf(stderr, "\n"); --traceLeft;
+                        }
+                        ctx.Rip = stepoverBp; ctx.EFlags |= 0x100; SetThreadContext(hThread,&ctx);
+                        stepoverBp = 0; CloseHandle(hThread);
+                        ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE);
+                        continue;
+                    }
                     auto it = orig.find(addr);
                     if (traceMode && it != orig.end() && addr == dllBase + traceStart && !tracing) {
                         // Begin tracing here: remove the INT3, back up RIP, single-step.

@@ -1399,6 +1399,41 @@ void Cpu::step() {
             }
         }
     }
+    if (std::getenv("EMU_THROWSITE") && start == 0x1415ed74eull) {
+        // The stoi "invalid argument" throw helper: fires exactly when a token
+        // failed to parse.  Dump every register that points at guest memory as a
+        // std::string, and the caller chain, to locate the empty token object.
+        static int seen = 0;
+        std::fprintf(stderr, "[throwsite] #%d at stoi-throw; regs->strings:\n", ++seen);
+        static const char* nm[16] = {"rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi",
+                                     "r8","r9","r10","r11","r12","r13","r14","r15"};
+        for (int i = 0; i < 16; ++i) {
+            uint64_t v = regs[i];
+            if (v <= 0x10000 || v > 0x7fffffffffffull) continue;
+            try {
+                uint64_t sz = mem_.read_sized(v + 0x10, 8), cap = mem_.read_sized(v + 0x18, 8);
+                if (sz < 0x2000 && cap >= sz && cap < 0x10000) {
+                    uint64_t d = (cap <= 15) ? v : mem_.read_sized(v, 8);
+                    std::fprintf(stderr, "[throwsite]  %s=%llx str(sz=%llu)=\"", nm[i],
+                                 (unsigned long long)v, (unsigned long long)sz);
+                    for (uint64_t k = 0; k < sz && k < 60; ++k) { unsigned c=(unsigned)mem_.read_sized(d+k,1);
+                        std::fprintf(stderr, "%c", (c>=32&&c<127)?(int)c:'.'); }
+                    std::fprintf(stderr, "\" w\"");
+                    uint64_t wd = (cap <= 7) ? v : mem_.read_sized(v, 8);
+                    for (uint64_t k = 0; k < sz && k < 60; ++k) { unsigned c=(unsigned)mem_.read_sized(wd+2*k,1);
+                        std::fprintf(stderr, "%c", (c>=32&&c<127)?(int)c:'.'); }
+                    std::fprintf(stderr, "\"\n");
+                }
+            } catch (...) {}
+        }
+        std::fprintf(stderr, "[throwsite]  dll returns:");
+        for (uint64_t k = 0; k < 0x200; k += 8) {
+            uint64_t q = 0; try { q = mem_.read_sized(regs[RSP] + k, 8); } catch (...) { break; }
+            if (q >= 0x140100000ull && q < 0x143100000ull)
+                std::fprintf(stderr, " +%llx", (unsigned long long)(q - 0x140100000ull));
+        }
+        std::fprintf(stderr, "\n");
+    }
     if (const char* tv = std::getenv("EMU_TREE")) {
       if (start == std::strtoull(tv, nullptr, 16)) {
         uint64_t root = regs[RCX];
