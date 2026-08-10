@@ -1373,6 +1373,31 @@ void Cpu::step() {
         } catch (...) { std::fprintf(stderr, "[valsrc] rcx=%llx unreadable\n", (unsigned long long)o); }
     }
 
+    // EMU_SLICE: single-run capture of the gate-2 number-conversion pipeline.
+    // At the slicer 0x14BF16B (rsi = source std::wstring being substr'd) and the
+    // converter 0x14BEFC6 (rbx = the resulting conversion-input std::wstring),
+    // log a sequence number + each wstring's size and inline content, so we can
+    // see — within ONE execution — a "1" source becoming an empty conversion
+    // input (the substr slicing zero chars).
+    if (std::getenv("EMU_SLICE") && (start == 0x1415bf16bull || start == 0x1415befc6ull)) {
+        static int seq = 0;
+        bool slicer = (start == 0x1415bf16bull);
+        uint64_t obj = slicer ? regs[RSI] : regs[RBX];
+        try {
+            uint64_t size = mem_.read64(obj + 0x10);
+            uint64_t cap  = mem_.read64(obj + 0x18);
+            uint64_t data = (cap <= 7) ? obj : mem_.read64(obj);
+            std::fprintf(stderr, "[slice#%d] %s obj=%llx size=%llu \"", seq++,
+                         slicer ? "SRC(0x14bf16b)" : "CONV(0x14befc6)",
+                         (unsigned long long)obj, (unsigned long long)size);
+            for (uint64_t k = 0; k < size && k < 32; ++k) {
+                unsigned c = (unsigned)mem_.read_sized(data + k * 2, 1);
+                std::fprintf(stderr, "%c", (c >= 32 && c < 127) ? (int)c : '.');
+            }
+            std::fprintf(stderr, "\"\n");
+        } catch (...) {}
+    }
+
     // EMU_FORCE_ISA=<val>: overwrite the MSVC CRT __isa_available global
     // (tsanpr.dll RVA 0x2C34418 -> emu 0x142D34418) once, early in
     // anpr_initialize, to force the CRT's string-function ISA dispatch. Used to
