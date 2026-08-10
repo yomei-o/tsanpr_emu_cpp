@@ -70,12 +70,29 @@ GP or XMM register (0-15) diverges through the traced region, so it is neither a
 control-flow nor an obvious ALU/SSE difference. It is a subtle,
 data-/memory-dependent execution infidelity.
 
-- Next step: the instruction/register-diff approach is exhausted (benign
-  divergences dominate). Pin it with a **full memory-state diff** between native
-  and the emulator at the value-name-lookup boundary (dump the license object and
-  every string it reaches on both sides, compare by content), or a hardware
-  data-watchpoint on the specific `std::string` size field that ends up 0 in the
-  emulator, tracing back to the write that should have set it to 1.
+- Built `ndbg` step-over (skip non-DLL excursions) so native traces reach deep
+  code; the license validation `0x14A4F50/0x14ED7A0` is a long loop over the
+  region vocabulary (Japanese/Korean place names, EU country codes) plus machine
+  properties, and the token `std::stoi` is >8000 instructions in.
+- First real (non-benign, non-pointer) divergence in the aligned SSE2 trace: at a
+  `wcslen` (tsanpr.dll+0x204B6EE) the length register `r9` is **4 in native but 6
+  in the emulator**, measuring the BaseBoard Product "L140MU". Both sides read
+  "L140MU" (6) from WMI, so the correct behaviour null-terminates it to "L140" (4)
+  at this stage and the emulator fails to; i.e. a buffer-content divergence.
+- WALL: native and emulator execute the SAME rip sequence with NO register
+  divergence right up to that point, yet the buffer content differs — so the
+  divergent write happened inside a region the diff can't see: either a non-DLL
+  excursion the step-over skips (e.g. ntdll RtlCopyMemory), or a memory-to-memory
+  store whose value never passes through a logged register. Combined with native
+  ASLR (can't re-read native heap post-hoc) and loop-coincidental rip alignment
+  (data divergences desync while rips still match), the empty-token root resists
+  every isolation method tried (instruction/XMM diff, object/string-content diff,
+  data/read watchpoints).
+- Next: instrument the emulator to log the ACTUAL bytes of every wmemcpy/memcpy
+  and every std::string assign into the property buffers during validation, and
+  diff those byte streams against a native capture — i.e. capture the data flow
+  directly rather than inferring it from register/rip traces. Or obtain the
+  fingerprint/validation spec from TS-Solution.
 
 ## Tools added this session (all reusable)
 
