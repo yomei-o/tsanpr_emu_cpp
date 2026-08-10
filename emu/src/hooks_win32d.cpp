@@ -139,11 +139,43 @@ void Emulator::install_win32_dll_hooks() {
     // node, processor zero" is a truthful description of a cooperative
     // scheduler that interprets one instruction stream.
     win32("GetLogicalProcessorInformationEx", 3, [](Emulator& e) {
-        // Refusing is a documented outcome, and a caller that sizes a pool from
-        // this has to cope with it; inventing a topology risks it believing in
-        // affinity masks the scheduler cannot honour.
+        // Refusing (ERROR_NOT_SUPPORTED) is documented, but onnxruntime's
+        // InitializeCpuInfo does not cope: it logs "error code 50" and then leaves
+        // a half-built structure whose failed field (HRESULT 0x80070032) is later
+        // dereferenced as a pointer, crashing recognition.  Bridge to the host so
+        // the CPU topology is real.  The SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX
+        // blocks are self-contained POD (sizes + GROUP_AFFINITY masks, no
+        // pointers), so a raw byte copy into guest memory is valid.
+#if defined(_WIN32)
+        LOGICAL_PROCESSOR_RELATIONSHIP rel =
+            static_cast<LOGICAL_PROCESSOR_RELATIONSHIP>(static_cast<DWORD>(e.arg_slot(0)));
+        uint64_t gbuf = e.arg_slot(1);
+        uint64_t glen = e.arg_slot(2);
+        if (glen == 0) { e.set_last_error(87); e.set_result(0); return; }  // ERROR_INVALID_PARAMETER
+        uint32_t guest_cap = e.mem.read32(glen);
+        DWORD needed = 0;
+        GetLogicalProcessorInformationEx(rel, nullptr, &needed);  // learn the size
+        std::vector<unsigned char> host(needed ? needed : 1);
+        DWORD have = needed;
+        if (needed == 0 ||
+            !GetLogicalProcessorInformationEx(
+                rel, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(host.data()), &have)) {
+            e.set_last_error(GetLastError());
+            e.set_result(0);
+            return;
+        }
+        e.mem.write32(glen, have);  // always report the required size
+        if (gbuf == 0 || guest_cap < have) {
+            e.set_last_error(122);  // ERROR_INSUFFICIENT_BUFFER
+            e.set_result(0);
+            return;
+        }
+        for (DWORD i = 0; i < have; ++i) e.mem.write8(gbuf + i, host[i]);
+        e.set_result(1);
+#else
         e.set_last_error(50);  // ERROR_NOT_SUPPORTED
         e.set_result(0);
+#endif
     });
     win32("GetNumaHighestNodeNumber", 1, [](Emulator& e) {
         if (e.arg_slot(0)) e.mem.write32(e.arg_slot(0), 0);
