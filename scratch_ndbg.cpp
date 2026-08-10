@@ -205,6 +205,18 @@ int main(int argc, char** argv) {
                                         std::fprintf(stderr, "%c", (buf[k] >= 32 && buf[k] < 127) ? (int)buf[k] : (buf[k] == 0 ? '#' : '.'));
                                     std::fprintf(stderr, "\"");
                                 }
+                                // Interpret as MSVC std::string: data@+0/inline, size@+0x10, cap@+0x18
+                                uint64_t sz=0, cap=0; SIZE_T g2=0;
+                                if (ReadProcessMemory(hProc,(void*)(v+0x10),&sz,8,&g2) &&
+                                    ReadProcessMemory(hProc,(void*)(v+0x18),&cap,8,&g2) &&
+                                    sz<=cap && cap<0x10000 && sz<0x2000) {
+                                    uint64_t data=v; if (cap>15) ReadProcessMemory(hProc,(void*)v,&data,8,&g2);
+                                    unsigned char sb[128]={0}; SIZE_T g3=0;
+                                    ReadProcessMemory(hProc,(void*)data,sb,sz<127?(SIZE_T)sz:127,&g3);
+                                    std::fprintf(stderr,"  str(sz=%llu)=\"",(unsigned long long)sz);
+                                    for (SIZE_T k=0;k<g3;k++) std::fprintf(stderr,"%c",(sb[k]>=32&&sb[k]<127)?(int)sb[k]:'.');
+                                    std::fprintf(stderr,"\"");
+                                }
                             }
                             std::fprintf(stderr, "\n");
                         }

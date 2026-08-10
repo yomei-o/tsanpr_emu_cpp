@@ -1378,6 +1378,22 @@ void Cpu::step() {
                             std::fprintf(stderr, "%c", (c >= 32 && c < 127) ? (int)c : (c == 0 ? '#' : '.')); }
                         std::fprintf(stderr, "\"");
                     } catch (...) { std::fprintf(stderr, "  -> (unreadable)"); }
+                    // Also try to read it as an MSVC std::string/wstring object
+                    // (data@+0 or inline, size@+0x10, cap@+0x18) and print content.
+                    try {
+                        uint64_t sz = mem_.read_sized(v + 0x10, 8), cap = mem_.read_sized(v + 0x18, 8);
+                        if (sz <= cap && cap < 0x10000 && sz < 0x2000) {
+                            uint64_t data = (cap <= 15) ? v : mem_.read_sized(v, 8);
+                            std::fprintf(stderr, "  str(sz=%llu)=\"", (unsigned long long)sz);
+                            for (uint64_t k = 0; k < sz && k < 80; ++k) { unsigned c=(unsigned)mem_.read_sized(data+k,1);
+                                std::fprintf(stderr, "%c", (c>=32&&c<127)?(int)c:'.'); }
+                            uint64_t wdata = (cap <= 7) ? v : mem_.read_sized(v, 8);
+                            std::fprintf(stderr, "\" wstr=\"");
+                            for (uint64_t k = 0; k < sz && k < 80; ++k) { unsigned c=(unsigned)mem_.read_sized(wdata+2*k,1);
+                                std::fprintf(stderr, "%c", (c>=32&&c<127)?(int)c:'.'); }
+                            std::fprintf(stderr, "\"");
+                        }
+                    } catch (...) {}
                 }
                 std::fprintf(stderr, "\n");
             }
