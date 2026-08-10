@@ -1399,6 +1399,37 @@ void Cpu::step() {
             }
         }
     }
+    if (const char* tv = std::getenv("EMU_TREE")) {
+      if (start == std::strtoull(tv, nullptr, 16)) {
+        uint64_t root = regs[RCX];
+        std::fprintf(stderr, "[tree] rip=%llx rcx=%llx -- reachable std::strings (depth 2):\n",
+                     (unsigned long long)start, (unsigned long long)root);
+        auto try_string = [&](uint64_t o, const char* tag) {
+            try {
+                uint64_t sz = mem_.read_sized(o + 0x10, 8), cap = mem_.read_sized(o + 0x18, 8);
+                if (!(sz >= 1 && sz < 512 && cap >= sz && cap < 0x10000)) return;
+                uint64_t nd = (cap <= 15) ? o : mem_.read_sized(o, 8);
+                uint64_t wd = (cap <= 7) ? o : mem_.read_sized(o, 8);
+                unsigned c0 = (unsigned)mem_.read_sized(nd, 1);
+                unsigned c1 = (unsigned)mem_.read_sized(nd + 1, 1);
+                bool wide = (c1 == 0 && c0 >= 32 && c0 < 127);
+                std::fprintf(stderr, "[tree] %s @%llx sz=%llu %s\"", tag, (unsigned long long)o,
+                             (unsigned long long)sz, wide ? "W" : "N");
+                uint64_t step = wide ? 2 : 1, base = wide ? wd : nd;
+                for (uint64_t k = 0; k < sz && k < 100; ++k) { unsigned c=(unsigned)mem_.read_sized(base+k*step,1);
+                    std::fprintf(stderr, "%c", (c>=32&&c<127)?(int)c:'.'); }
+                std::fprintf(stderr, "\"\n");
+            } catch (...) {}
+        };
+        for (uint64_t off = 0; off < 0x400; off += 8) {
+            uint64_t here = root + off;
+            try_string(here, "obj");
+            uint64_t p = 0; try { p = mem_.read_sized(here, 8); } catch (...) { continue; }
+            bool heap = (p >= 0x150000000ull && p < 0x160000000ull) || (p >= 0x142000000ull && p < 0x143000000ull);
+            if (heap) for (uint64_t o2 = 0; o2 < 0x200; o2 += 8) try_string(p + o2, "ptr");
+        }
+      }
+    }
     if (std::getenv("EMU_IDX") && start == 0x1415b927bull) {
         std::fprintf(stderr, "[idx] emu provider index @142d1aa38 = %d\n",
                      (int)mem_.read_sized(0x142d1aa38ull, 4));

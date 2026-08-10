@@ -220,6 +220,32 @@ int main(int argc, char** argv) {
                             }
                             std::fprintf(stderr, "\n");
                         }
+                        if (getenv("NDBG_TREE")) {
+                            // Recursive std::string dump from rcx (depth 2), to diff
+                            // by CONTENT against the emulator's EMU_TREE.
+                            uint64_t root = ctx.Rcx;
+                            std::fprintf(stderr, "[tree] rcx=%llx reachable std::strings:\n",(unsigned long long)root);
+                            auto tryS = [&](uint64_t o, const char* tag){
+                                uint64_t sz=0,cap=0; SIZE_T g=0;
+                                if(!ReadProcessMemory(hProc,(void*)(o+0x10),&sz,8,&g)) return;
+                                if(!ReadProcessMemory(hProc,(void*)(o+0x18),&cap,8,&g)) return;
+                                if(!(sz>=1&&sz<512&&cap>=sz&&cap<0x10000)) return;
+                                uint64_t nd=o; if(cap>15) if(!ReadProcessMemory(hProc,(void*)o,&nd,8,&g))return;
+                                unsigned char b2[2]={0}; ReadProcessMemory(hProc,(void*)nd,b2,2,&g);
+                                bool wide=(b2[1]==0&&b2[0]>=32&&b2[0]<127);
+                                unsigned char sb[210]={0}; SIZE_T step=wide?2:1;
+                                ReadProcessMemory(hProc,(void*)nd,sb,(SIZE_T)(sz*step<210?sz*step:210),&g);
+                                std::fprintf(stderr,"[tree] %s @%llx sz=%llu %s\"",tag,(unsigned long long)o,(unsigned long long)sz,wide?"W":"N");
+                                for(uint64_t k=0;k<sz&&k<100;k++){unsigned c=sb[k*step];std::fprintf(stderr,"%c",(c>=32&&c<127)?(int)c:'.');}
+                                std::fprintf(stderr,"\"\n");
+                            };
+                            for(uint64_t off=0;off<0x400;off+=8){
+                                uint64_t here=root+off; tryS(here,"obj");
+                                uint64_t p=0; SIZE_T g=0;
+                                if(ReadProcessMemory(hProc,(void*)here,&p,8,&g) && p>0x10000 && p<0x7fffffffffffULL)
+                                    for(uint64_t o2=0;o2<0x200;o2+=8) tryS(p+o2,"ptr");
+                            }
+                        }
                         // Stack: print any qword that looks like a tsanpr.dll
                         // return address, to reveal the caller chain.
                         {
