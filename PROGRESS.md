@@ -134,6 +134,38 @@ Dumping the actual `std::wstring` object at the `wcstol` call (`EMU_STOIOBJ` at
   (wstring object + caller stack-walk at the wcstol), `EMU_VALSRC` (tokenizer
   input at 0x14A6EAF).
 
+### Exact divergent instruction pinned — 0x14BEBF4 (resync-diff)
+
+Captured 60k-instruction `IT rva+16regs` traces of the validation call
+(from 0x14A6EAF) in BOTH emulator (`EMU_ITRACE`) and native (`ndbg --trace …
+2c34418 1`, poking `__isa_available`→1 so both take the SSE2 CRT paths), kept
+only app-logic RVAs (`< 0x1a00000`, dropping the IPP/CRT/heap-allocator region
+whose internals legitimately differ between the two heaps), and diffed with a
+**resync** step (skip to the next 3-in-a-row re-alignment on mismatch). That
+filters every benign divergence — the `__isa_available` dispatch (0x204B60C), the
+`wcslen` alignment prologue (0x204B6E4), and a `std::wstring` overlap check
+(0x14A54CE, where emu and native reach 0x14A54ED by different branches but both
+end rdi=rsi=7). The first **non-re-syncing** divergence is:
+
+**tsanpr.dll+0x14BEBF4** — `cmp rdx,r8 ; je 0x14BED38`, where `rdx`=start and
+`r8`=end of the character range fed to a boost::lexical_cast-style stream/num_get
+number conversion:
+- **Emulator:** `rdx==r8` (both 0xAFD630) → **empty range** → takes the branch to
+  0x14BED38 and converts **0 characters** → the token is an empty `std::wstring`
+  → `std::stoi("")` throws → (105).
+- **Native:** `rdx=…3B0, r8=…3B2` → a **1-wchar range `"1"`** → falls through to
+  the loop body 0x14BEBFA and converts `"1"` → stoi returns 1 → passes.
+
+Both ranges are stack buffers; their endpoints are produced by the enclosing
+function **0x14BEF70** (facet/iterator virtual calls, refcount incs at 0x1482060).
+So the emulator hands the number-conversion an **empty input** where native hands
+it `"1"`. That is the mechanical cause of the empty stoi token.
+
+- Next: step up into 0x14BEF70's stream/facet setup to find why the emulator
+  leaves the put-area/range empty (length 0 vs 1) — most likely a virtual-dispatch
+  or facet-read infidelity in the boost lexical_cast stream. Trace artifacts:
+  `scratch_bigtrace.log` (emu) / `scratch_bignat.log` (native).
+
 ## Tools added this session (all reusable)
 
 - `scratch_ndbg.cpp` → `ndbg.exe` — minimal Win32 debugger: breakpoints at
