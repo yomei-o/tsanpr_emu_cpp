@@ -789,7 +789,64 @@ void Emulator::install_win32_hooks() {
         int c = a.compare(b);
         e.set_result(c < 0 ? 1u : c > 0 ? 3u : 2u);  // CSTR_LESS/EQUAL/GREATER
     });
-    win32("GetStringTypeW", 4, [](Emulator& e) { e.set_result(1); });
+    // GetStringTypeW(dwInfoType, lpSrcStr, cchSrc, lpCharType): classify each
+    // source wide char into CT_CTYPE1/2/3 flags.  The old stub just returned 1
+    // and left lpCharType holding stack garbage, so the static CRT's num_get saw
+    // '1' as a non-digit and parsed zero digits — the gate-2 license token came
+    // out empty and std::stoi threw (error 105).  Bridge to the host so the
+    // classification is real.
+    win32("GetStringTypeW", 4, [](Emulator& e) {
+        uint64_t info = e.arg_slot(0);
+        uint64_t src  = e.arg_slot(1);
+        int32_t  cch  = static_cast<int32_t>(static_cast<uint32_t>(e.arg_slot(2)));
+        uint64_t out  = e.arg_slot(3);
+        if (src == 0 || out == 0) { e.set_last_error(87); e.set_result(0); return; }  // ERROR_INVALID_PARAMETER
+        // Read the source into a host wide buffer.  cch < 0 means null-terminated;
+        // then the count classified (and written) includes the terminator.
+        std::vector<uint16_t> chars;
+        if (cch < 0) {
+            for (uint64_t p = src;; p += 2) {
+                uint16_t c = e.mem.read16(p);
+                chars.push_back(c);
+                if (c == 0) break;
+            }
+        } else {
+            for (int32_t i = 0; i < cch; ++i) chars.push_back(e.mem.read16(src + i * 2));
+        }
+        size_t n = chars.size();
+#if defined(_WIN32)
+        std::vector<wchar_t> wsrc(n);
+        for (size_t i = 0; i < n; ++i) wsrc[i] = static_cast<wchar_t>(chars[i]);
+        std::vector<WORD> types(n ? n : 1, 0);
+        if (n && GetStringTypeW(static_cast<DWORD>(info), wsrc.data(),
+                                static_cast<int>(n), types.data())) {
+            for (size_t i = 0; i < n; ++i) e.mem.write16(out + i * 2, types[i]);
+            e.set_result(1);
+        } else if (n == 0) {
+            e.set_result(1);
+        } else {
+            e.set_last_error(GetLastError());
+            e.set_result(0);
+        }
+#else
+        // Portable fallback: CT_CTYPE1 flags for ASCII (enough for number parsing).
+        for (size_t i = 0; i < n; ++i) {
+            uint16_t c = chars[i], t = 0;
+            if (info == 1) {  // CT_CTYPE1
+                if (c > 0) t |= 0x0200;                               // C1_DEFINED
+                if (c >= 'A' && c <= 'Z') t |= 0x0001 | 0x0100;       // C1_UPPER|C1_ALPHA
+                if (c >= 'a' && c <= 'z') t |= 0x0002 | 0x0100;       // C1_LOWER|C1_ALPHA
+                if (c >= '0' && c <= '9') t |= 0x0004;                // C1_DIGIT
+                if (c == ' ' || (c >= 0x09 && c <= 0x0d)) t |= 0x0008;// C1_SPACE
+                if (c == ' ' || c == '\t') t |= 0x0040;               // C1_BLANK
+                if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') ||
+                    (c >= 'a' && c <= 'f')) t |= 0x0080;              // C1_XDIGIT
+            }
+            e.mem.write16(out + i * 2, t);
+        }
+        e.set_result(1);
+#endif
+    });
     win32("GetLocaleInfoW", 4, [](Emulator& e) { e.set_result(0); });
     win32("GetUserDefaultLCID", 0, [](Emulator& e) { e.set_result(0x0409); });
     ret1("IsValidLocale", 2);

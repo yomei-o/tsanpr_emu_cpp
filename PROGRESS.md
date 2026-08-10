@@ -25,7 +25,36 @@ Fixed by bridging device enumeration to the host, faithfully:
 Result: the emulator now computes the **same fingerprint as native**
 (`d4d1fe79…` on this machine) and the license lookup succeeds.
 
-## Gate 2 — post-lookup validation — ROOT CAUSE IDENTIFIED, fix in progress ◐
+## Gate 2 — post-lookup validation — ROOT CAUSE FOUND AND FIXED ✅
+
+**ROOT CAUSE: the emulator's `GetStringTypeW` hook was a stub** —
+`win32("GetStringTypeW", 4, [](Emulator& e){ e.set_result(1); })` returned success
+but never wrote the `lpCharType` output buffer, so the static-CRT `num_get` read
+stack garbage (e.g. `0xF948`) as the character-type flags for `'1'`. The correct
+`CT_CTYPE1` flags for `'1'` are `0x0284` (`C1_DEFINED|C1_XDIGIT|C1_DIGIT`); the
+garbage had **no `C1_DIGIT` bit**, so `num_get` treated `'1'` as a non-digit,
+parsed **zero digits**, and the license token came out empty → `std::stoi("")`
+threw → `(105)`. Fixed in `emu/src/hooks_win32.cpp` by bridging `GetStringTypeW`
+to the host API (reads the guest source chars, calls the real `GetStringTypeW`,
+writes the real classification WORDs back to guest memory; portable fallback
+classifies ASCII for number parsing). After the fix `anpr_initialize()` no longer
+returns 105 and anpr proceeds to plate recognition.
+
+How it was found (the differential-tracing chain that led here):
+- Captured 60k-instruction traces of the validation from 0x14A6EAF in both the
+  emulator (`EMU_ITRACE`) and native (`ndbg --trace … 2c34418 1`, poking
+  `__isa_available`→1 so both take the SSE2 CRT paths), kept only app-logic RVAs,
+  and diffed with a **resync** step to skip benign divergences.
+- The real divergence bottomed out at a `num_get` parse loop whose per-character
+  decision is a `ctype::is`-style test: `0x14B1780` → `0x150D1AC` calls
+  `GetStringTypeW` and `test bx, ax; setne al`. For `'1'` the classification word
+  `ax` was `0x0284` in native but `0xF948` in the emulator — i.e. the emulator's
+  `GetStringTypeW` was returning garbage, which is the stub above.
+- `EMU_SLICE` confirmed the downstream effect in one run: the 4th conversion's
+  source `"1"` became an empty conversion input (the parse consumed 0 chars),
+  while native kept `"1"`.
+
+### (historical) earlier trace notes that led to the fix
 
 After the lookup succeeds the engine runs a second validation that still fails
 with `(105)`. Traced with a purpose-built native debugger (`scratch_ndbg.cpp`)
