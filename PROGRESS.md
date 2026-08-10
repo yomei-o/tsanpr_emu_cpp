@@ -54,12 +54,28 @@ Progress on isolating gate 2 (ruling things out):
   — the high-bit difference is garbage *past* the terminator and does not affect
   the result. This kind of benign divergence is pervasive and masks the real one.
 
-- Next step (noise-robust): stop diffing instructions; instead compare the actual
-  **string values** at the license helper's call boundaries (the split at
-  `+0x146DF30` and `std::stoi`/`to_int` at `+0x14A511E`) between native and the
-  emulator, and find where the token first becomes empty in the emulator — that
-  is the emulator infidelity to fix. Tooling for both sides already exists
-  (`ndbg` register/memory dumps + emulator `EMU_REGS`).
+Ruled out (none is the cause): the emulator's `pcmpeqw`/`pmovmskb`/`pmaddwd`
+(correct); locale APIs (`GetLocaleInfoW`/`localeconv` are not even called — the
+DLL uses its own static-CRT locale); the WMI→BSTR path (the DeviceID comes back
+as a correct BSTR "1", byte-length prefix and all); the `'/'`-vs-`0` byte at
+`[rbp-0x69]` (passed to a string-concat at `+0x146DF30` that overwrites the arg —
+unused); the wcslen mask `0xfff0`-vs-`0xc0f0` (garbage past the terminator, both
+length 2). All of these are benign.
+
+What is actually true: `std::stoi`'s token is `"1"` in native and `""` in the
+emulator. Native's value is the network DeviceID `"1"` (WMI returns it correctly
+to the emulator too). Somewhere in the *guest-side string processing* between the
+correct WMI BSTR and the `std::stoi`, the emulator turns `"1"` into `""` — but no
+GP or XMM register (0-15) diverges through the traced region, so it is neither a
+control-flow nor an obvious ALU/SSE difference. It is a subtle,
+data-/memory-dependent execution infidelity.
+
+- Next step: the instruction/register-diff approach is exhausted (benign
+  divergences dominate). Pin it with a **full memory-state diff** between native
+  and the emulator at the value-name-lookup boundary (dump the license object and
+  every string it reaches on both sides, compare by content), or a hardware
+  data-watchpoint on the specific `std::string` size field that ends up 0 in the
+  emulator, tracing back to the write that should have set it to 1.
 
 ## Tools added this session (all reusable)
 
