@@ -1397,6 +1397,19 @@ void Cpu::step() {
             std::fprintf(stderr, "\"\n");
         } catch (...) {}
     }
+    // EMU_SLICE also: at the substr length computation 0x14BF160
+    // (`sub rbx,[rsp+0x90]; sar rbx,1`), log the two bounding pointers and the
+    // resulting char length, so the failing 4th slice (length 0) can be compared
+    // to the working ones.
+    if (std::getenv("EMU_SLICE") && start == 0x1415bf160ull) {
+        try {
+            uint64_t endp = regs[RBX];
+            uint64_t begp = mem_.read64(regs[RSP] + 0x90);
+            long long len = ((long long)(endp - begp)) / 2;
+            std::fprintf(stderr, "[slicelen] end(rbx)=%llx beg([rsp+90])=%llx -> len=%lld\n",
+                         (unsigned long long)endp, (unsigned long long)begp, len);
+        } catch (...) {}
+    }
 
     // EMU_FORCE_ISA=<val>: overwrite the MSVC CRT __isa_available global
     // (tsanpr.dll RVA 0x2C34418 -> emu 0x142D34418) once, early in

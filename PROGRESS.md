@@ -192,6 +192,33 @@ Followed it one more level (register diff of the aligned 0x14BEF70 window +
   0x14BEBF4 empty-range branch; size 0-vs-1 at 0x14BEFC6; the source wstring is
   genuinely empty (memory-dumped); the token is the 2nd/validation stoi.
 
+### Single-run proof + the operation is a trailing-TRIM (env EMU_SLICE)
+
+`EMU_SLICE` logs, in ONE emulator run, the source wstring at the slicer
+(0x14BF16B) and the conversion-input wstring at the converter (0x14BEFC6) with a
+seq#, plus the length math at 0x14BF160. Result — the converter runs on four
+values (L140MU, "1", L140MU, "1"); the first three come out unchanged, the 4th is
+`SRC 0xAFD630 "1"` → `CONV 0xAFD630 ""` (same buffer, emptied). The length probe
+shows the operation is a **trailing trim/erase of `len` chars**, where
+`len = (rbx - [rsp+0x90]) / 2`:
+- all working conversions: `rbx == [rsp+0x90]` → **len 0** → nothing trimmed →
+  string kept (so L140MU and the first "1" survive);
+- the failing 4th: `rbx=0xAFD632, [rsp+0x90]=0xAFD630` → **len 1** → trims the one
+  and only char off "1" → empty. Native computes len 0 here (keeps "1").
+
+So the bug is NOT the length subtraction itself — it is the **end pointer `rbx`**,
+which the emulator sets to `0xAFD632` (one wchar past "1") where it should equal
+the begin pointer `0xAFD630`. That `rbx` is produced just above by a std/boost
+**stream-iterator two-level virtual-call sequence** at 0x14BF120-0x14BF13F
+(`mov rax,[rcx]; call [rax+0x10]` then `mov r8,[[rax]]; call r8` — num_get /
+istreambuf_iterator advance+deref). So the emulator's stream iterator lands its
+end/EOF position one wchar off for this 4th value, making the trim erase the digit.
+
+- Next (narrow): trace INTO the 0x14BF129 / 0x14BF13F virtual calls to find the
+  specific mis-executed routine that returns the off-by-one iterator/end pointer
+  (candidate: an SSE string/`char_traits` compare or a facet's get). That single
+  routine is the emulator infidelity to fix. Probe: env `EMU_SLICE`.
+
 ## Tools added this session (all reusable)
 
 - `scratch_ndbg.cpp` → `ndbg.exe` — minimal Win32 debugger: breakpoints at
