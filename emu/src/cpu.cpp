@@ -1304,6 +1304,38 @@ void Cpu::step() {
         }
     }
 
+    // EMU_STOIOBJ: at the stoi wrapper entry (RVA 0x14ECA20), dump the
+    // std::wstring OBJECT passed by reference (candidate ptrs rcx/rdx/r8) so we
+    // can tell whether the empty gate-2 token is size==0 with data=="1" (an SSO
+    // size bug) or a genuinely empty buffer.  Also logs the caller (return addr).
+    // EMU_STOIOBJ: at the wcstol call inside stoi (RVA 0x14ED076), rbx is the
+    // token c_str(); for an SSO std::wstring that is the object base, so size is
+    // at rbx+0x10 and cap at rbx+0x18.  Log both to tell an SSO size==0 bug
+    // (data present, size 0) from a genuinely empty buffer.  Guarded so a bad
+    // read can't abort the run.
+    if (std::getenv("EMU_STOIOBJ") && start == 0x1415ed076ull) {
+        uint64_t ret = mem_.read64(regs[RSP]);
+        uint64_t obj = regs[RBX];
+        try {
+            uint64_t size = mem_.read64(obj + 0x10);
+            uint64_t cap  = mem_.read64(obj + 0x18);
+            std::fprintf(stderr, "[stoiobj] ret=%llx(RVA %llx) obj=%llx size=%llu cap=%llu inline=\"",
+                         (unsigned long long)ret,
+                         (unsigned long long)(ret - 0x140100000ull),
+                         (unsigned long long)obj,
+                         (unsigned long long)size, (unsigned long long)cap);
+            for (uint64_t k = 0; k < 16; ++k) {
+                unsigned c = (unsigned)mem_.read_sized(obj + k * 2, 1);
+                unsigned c2 = (unsigned)mem_.read_sized(obj + k * 2 + 1, 1);
+                if (c == 0 && c2 == 0) break;
+                std::fprintf(stderr, "%c", (c >= 32 && c < 127) ? (int)c : '.');
+            }
+            std::fprintf(stderr, "\"\n");
+        } catch (...) {
+            std::fprintf(stderr, "[stoiobj] obj=%llx unreadable\n", (unsigned long long)obj);
+        }
+    }
+
     // EMU_FORCE_ISA=<val>: overwrite the MSVC CRT __isa_available global
     // (tsanpr.dll RVA 0x2C34418 -> emu 0x142D34418) once, early in
     // anpr_initialize, to force the CRT's string-function ISA dispatch. Used to
