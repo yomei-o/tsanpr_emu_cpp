@@ -184,17 +184,32 @@ void Emulator::install_win32_dll_hooks() {
     ret0("QueryDepthSList", 1);
 
     // ---- system directories -------------------------------------------------
-    win32("GetSystemDirectoryA", 2, [](Emulator& e) {
-        write_narrow_dir(e, e.arg_slot(0), e.arg_slot(1), "C:\\Windows\\System32");
+    // Bridged to the host so the CASE matches the real machine: Windows returns
+    // "C:\WINDOWS" (upper) here, and a guest that folds the path into a license
+    // check compares it case-sensitively.  A hard-coded "C:\Windows" diverged.
+    auto host_dir = [](bool system) -> std::string {
+#if defined(_WIN32)
+        wchar_t buf[MAX_PATH];
+        UINT n = system ? GetSystemDirectoryW(buf, MAX_PATH) : GetWindowsDirectoryW(buf, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) {
+            std::string s;  // a system directory path is ASCII
+            for (UINT i = 0; i < n; ++i) s.push_back(static_cast<char>(buf[i] & 0xff));
+            return s;
+        }
+#endif
+        return system ? "C:\\Windows\\System32" : "C:\\Windows";
+    };
+    win32("GetSystemDirectoryA", 2, [host_dir](Emulator& e) {
+        write_narrow_dir(e, e.arg_slot(0), e.arg_slot(1), host_dir(true));
     });
-    win32("GetSystemDirectoryW", 2, [](Emulator& e) {
-        write_wide_dir(e, e.arg_slot(0), e.arg_slot(1), "C:\\Windows\\System32");
+    win32("GetSystemDirectoryW", 2, [host_dir](Emulator& e) {
+        write_wide_dir(e, e.arg_slot(0), e.arg_slot(1), host_dir(true));
     });
-    win32("GetWindowsDirectoryW", 2, [](Emulator& e) {
-        write_wide_dir(e, e.arg_slot(0), e.arg_slot(1), "C:\\Windows");
+    win32("GetWindowsDirectoryW", 2, [host_dir](Emulator& e) {
+        write_wide_dir(e, e.arg_slot(0), e.arg_slot(1), host_dir(false));
     });
-    win32("GetWindowsDirectoryA", 2, [](Emulator& e) {
-        write_narrow_dir(e, e.arg_slot(0), e.arg_slot(1), "C:\\Windows");
+    win32("GetWindowsDirectoryA", 2, [host_dir](Emulator& e) {
+        write_narrow_dir(e, e.arg_slot(0), e.arg_slot(1), host_dir(false));
     });
     // SHGetFolderPathW(hwnd, csidl, token, flags, path) - the folders a guest
     // stores its own data in.  CSIDL_APPDATA is 0x1A, LOCAL_APPDATA 0x1C,
