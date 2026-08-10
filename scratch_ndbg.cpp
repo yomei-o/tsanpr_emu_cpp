@@ -120,6 +120,12 @@ int main(int argc, char** argv) {
                                           ctx.R8,ctx.R9,ctx.R10,ctx.R11,ctx.R12,ctx.R13,ctx.R14,ctx.R15};
                         std::fprintf(stderr, "IT %llx", (unsigned long long)(rip - dllBase));
                         for (int i = 0; i < 16; ++i) std::fprintf(stderr, " %llx", (unsigned long long)r[i]);
+                        if (getenv("NDBG_XMM")) {
+                            M128A* xh = &ctx.Xmm0;
+                            for (int i = 0; i < 8; ++i)
+                                std::fprintf(stderr, " x%d=%016llx%016llx", i,
+                                             (unsigned long long)xh[i].High, (unsigned long long)xh[i].Low);
+                        }
                         std::fprintf(stderr, "\n");
                         --traceLeft;
                     }

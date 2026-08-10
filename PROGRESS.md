@@ -38,9 +38,28 @@ diffing native vs emulator instruction-by-instruction:
   native vs 1 (SSE2) in the emulator** — because the emulator only advertises
   SSE2 via CPUID. So native and emulator take different CRT string-function code
   paths. This is (so far) benign ISA dispatch, masking the real data divergence.
-- Next step: neutralise the ISA-dispatch noise (force native's `__isa_available`
-  to 1 so both use the SSE2 path) and re-diff to find the true instruction where
-  the value goes empty in the emulator — then fix that emulator infidelity.
+Progress on isolating gate 2 (ruling things out):
+
+- Forcing native's `__isa_available`→1 (via `ndbg --poke`) makes native take the
+  same SSE2 CRT string paths as the emulator, and **native still passes** — so
+  the SSE2 paths are correct on real hardware; the emulator's *execution* of them
+  is what differs.
+- Verified the emulator's `pcmpeqw`, `pmovmskb`, `pmaddwd` implementations are
+  correct; the license-validation helper is `tsanpr.dll+0x14A4F50` (reads an int
+  at licenseObject+0x49, itoa's it, converts "TS-ANPR", combines, then
+  `std::stoi`s a token). The failing token is empty in the emulator.
+- Instruction-level diff (aligned SSE2 paths) is confounded by **uninitialised
+  stack**: e.g. a `wcslen` at +0x204B714 shows mask `0xfff0` (native) vs `0xc0f0`
+  (emu), but both have their lowest set bit at position 4, so both yield length 2
+  — the high-bit difference is garbage *past* the terminator and does not affect
+  the result. This kind of benign divergence is pervasive and masks the real one.
+
+- Next step (noise-robust): stop diffing instructions; instead compare the actual
+  **string values** at the license helper's call boundaries (the split at
+  `+0x146DF30` and `std::stoi`/`to_int` at `+0x14A511E`) between native and the
+  emulator, and find where the token first becomes empty in the emulator — that
+  is the emulator infidelity to fix. Tooling for both sides already exists
+  (`ndbg` register/memory dumps + emulator `EMU_REGS`).
 
 ## Tools added this session (all reusable)
 

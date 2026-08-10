@@ -1279,11 +1279,27 @@ void Cpu::step() {
             --left;
             std::fprintf(stderr, "IT %llx", (unsigned long long)(start - 0x140100000ull));
             for (int i = 0; i < 16; ++i) std::fprintf(stderr, " %llx", (unsigned long long)regs[i]);
+            if (std::getenv("EMU_ITRACE_XMM"))
+                for (int i = 0; i < 8; ++i)
+                    std::fprintf(stderr, " x%d=%016llx%016llx", i,
+                                 (unsigned long long)xmm[i].q[1], (unsigned long long)xmm[i].q[0]);
             std::fprintf(stderr, "\n");
             if (left == 0) armed = false;
         }
     }
 
+    // EMU_FORCE_ISA=<val>: overwrite the MSVC CRT __isa_available global
+    // (tsanpr.dll RVA 0x2C34418 -> emu 0x142D34418) once, early in
+    // anpr_initialize, to force the CRT's string-function ISA dispatch. Used to
+    // test whether the emulator's SSE string path is what breaks gate 2.
+    if (const char* fi = std::getenv("EMU_FORCE_ISA")) {
+        static bool done = false;
+        if (!done && start == 0x1415b8bb0ull) {
+            mem_.write_sized(0x142d34418ull, 4, std::strtoull(fi, nullptr, 0));
+            done = true;
+            std::fprintf(stderr, "[isa] forced __isa_available=%s at fingerprint entry\n", fi);
+        }
+    }
     if (std::getenv("EMU_MEMCPY") && start == 0x1422d31d0ull) {
         uint64_t src = regs[RDX], len = regs[8];
         if (len >= 5 && len <= 80 && src > 0x10000 && src < 0x7fffffffffffULL) {
