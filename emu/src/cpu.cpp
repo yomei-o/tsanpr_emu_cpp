@@ -1264,6 +1264,22 @@ void Cpu::step() {
     uint64_t start = rip;
     g_watch_rip = start;
 
+    // Every EMU_*/env-gated diagnostic below is off in an ordinary run.  Each was
+    // calling std::getenv PER env var PER instruction just to establish that —
+    // ruinous for a long run (model inference is billions of instructions).  Cache
+    // "is any diagnostic enabled" ONCE so the common case is a single branch, the
+    // same discipline the census/profiler block below already uses via watching_.
+    static const bool g_emu_diag = [] {
+        static const char* const vars[] = {
+            "EMU_ITRACE", "EMU_STOIOBJ", "EMU_VALSRC", "EMU_SLICE", "EMU_FORCE_ISA",
+            "EMU_MEMCPY", "EMU_SCAN", "EMU_DBG", "EMU_REGS", "EMU_THROWSITE",
+            "EMU_TREE", "EMU_IDX", "EMU_PMETH", "EMU_PROV", "EMU_OBJ", "EMU_CONV",
+            "EMU_FIND", "EMU_RBP", "EMU_PREIMAGE"};
+        for (const char* v : vars)
+            if (std::getenv(v)) return true;
+        return false;
+    }();
+    if (g_emu_diag) {
     // EMU_ITRACE=<trigaddr>:<N> — once trigaddr executes, log rip(as dll+RVA)
     // and all 16 regs for the next N instructions, for diffing against ndbg's
     // native trace.  Only instructions inside the DLL (>=0x140100000) are logged.
@@ -1840,6 +1856,7 @@ void Cpu::step() {
             }
         }
     }
+    }  // if (g_emu_diag)
 
     // The diagnostics, behind one test.
     //
