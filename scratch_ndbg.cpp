@@ -35,11 +35,24 @@ int main(int argc, char** argv) {
     std::string program = argv[1];
     std::vector<uint64_t> rvas;
     bool traceMode = false; uint64_t traceStart = 0; uint64_t traceBudget = 20000;
+    // --poke <trigRVA> <targetRVA> <dwordVal>: at the first hit of trigRVA, write
+    // dwordVal to dllBase+targetRVA, then continue normally (used to force
+    // __isa_available so native takes the same ISA path as the emulator).
+    bool pokeMode = false; uint64_t pokeTrig = 0, pokeTarget = 0; uint32_t pokeVal = 0;
     if (std::string(argv[2]) == "--trace") {
         traceMode = true;
         traceStart = std::strtoull(argv[3], nullptr, 16);
         if (argc > 4) traceBudget = std::strtoull(argv[4], nullptr, 0);
+        // optional: --trace <start> <N> <pokeTargetRVA> <pokeVal> — poke at trace start
+        if (argc > 6) { pokeTarget = std::strtoull(argv[5], nullptr, 16);
+                        pokeVal = (uint32_t)std::strtoull(argv[6], nullptr, 16); pokeMode = true; }
         rvas.push_back(traceStart);
+    } else if (std::string(argv[2]) == "--poke") {
+        pokeMode = true;
+        pokeTrig = std::strtoull(argv[3], nullptr, 16);
+        pokeTarget = std::strtoull(argv[4], nullptr, 16);
+        pokeVal = (uint32_t)std::strtoull(argv[5], nullptr, 16);
+        rvas.push_back(pokeTrig);
     } else {
         for (int i = 2; i < argc; ++i) rvas.push_back(std::strtoull(argv[i], nullptr, 16));
     }
@@ -130,6 +143,13 @@ int main(int argc, char** argv) {
                         HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, tid);
                         CONTEXT ctx{}; ctx.ContextFlags = CONTEXT_FULL;
                         GetThreadContext(hThread, &ctx);
+                        if (pokeMode) {
+                            uint64_t tgt = dllBase + pokeTarget; uint32_t before = 0; SIZE_T n = 0;
+                            ReadProcessMemory(hProc, (void*)tgt, &before, 4, &n);
+                            WriteProcessMemory(hProc, (void*)tgt, &pokeVal, 4, &n);
+                            std::fprintf(stderr, "[ndbg] poke +%llx: %u -> %u\n",
+                                         (unsigned long long)pokeTarget, before, pokeVal);
+                        }
                         WriteProcessMemory(hProc, (void*)addr, &it->second, 1, nullptr);
                         FlushInstructionCache(hProc, (void*)addr, 1);
                         ctx.Rip = addr;
@@ -138,6 +158,24 @@ int main(int argc, char** argv) {
                         tracing = true;
                         std::fprintf(stderr, "[ndbg] trace start at +%llx\n", (unsigned long long)traceStart);
                         CloseHandle(hThread);
+                        ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE);
+                        continue;
+                    }
+                    if (pokeMode && it != orig.end() && addr == dllBase + pokeTrig) {
+                        // Poke the target dword, then step over and re-arm this bp
+                        // (leave it armed harmlessly; the write is idempotent).
+                        uint64_t tgt = dllBase + pokeTarget;
+                        uint32_t before = 0; SIZE_T n = 0;
+                        ReadProcessMemory(hProc, (void*)tgt, &before, 4, &n);
+                        WriteProcessMemory(hProc, (void*)tgt, &pokeVal, 4, &n);
+                        std::fprintf(stderr, "[ndbg] poke +%llx: %u -> %u\n",
+                                     (unsigned long long)pokeTarget, before, pokeVal);
+                        HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, tid);
+                        CONTEXT ctx{}; ctx.ContextFlags = CONTEXT_FULL; GetThreadContext(hThread, &ctx);
+                        WriteProcessMemory(hProc, (void*)addr, &it->second, 1, nullptr);
+                        FlushInstructionCache(hProc, (void*)addr, 1);
+                        ctx.Rip = addr; ctx.EFlags |= 0x100; SetThreadContext(hThread, &ctx);
+                        pendingRearm[tid] = addr; CloseHandle(hThread);
                         ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE);
                         continue;
                     }

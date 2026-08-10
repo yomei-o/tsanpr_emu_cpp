@@ -6,19 +6,8 @@
 *.exp
 *.lib
 
-# Local investigation scratch (logs only; keep the .cpp/.py tools)
-scratch_*.log
-scratch_*.gz
-scratch_eon.gz
-
-# Sensitive: license registry keys and the machine-specific license request.
-# These carry this machine's hardware fingerprint / license material and must
-# never be published.
-/backup/
-*.req
-
-# Backup copies
-*.orig.exe
-
-# transient logs
+# Transient logs
 *.log
+
+# Local backup copy of the original emulator binary
+backup/x86emu.orig.exe
