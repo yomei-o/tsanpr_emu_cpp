@@ -166,6 +166,32 @@ it `"1"`. That is the mechanical cause of the empty stoi token.
   or facet-read infidelity in the boost lexical_cast stream. Trace artifacts:
   `scratch_bigtrace.log` (emu) / `scratch_bignat.log` (native).
 
+Followed it one more level (register diff of the aligned 0x14BEF70 window +
+`EMU_REGS` memory dumps):
+
+- At **0x14BEFC6** (`mov rax,[rsi]`, rsi=wstring+0x10) the value read is the
+  **std::wstring SIZE**: `rax=0` in the emulator, `rax=1` in native. Then
+  `0x14BEFC9 lea r8,[rbx+rax*2]` makes the end pointer, so emu's range is empty
+  and native's spans one wchar. So the *source* wstring handed to the conversion
+  has **size 0 in the emulator, size 1 in native**.
+- `EMU_REGS` dump of that source wstring (emu addr 0xAFD630) shows it is
+  **genuinely empty** — the inline SSO bytes are zero, NOT "1" with a stale size.
+  So this is not an SSO size-vs-data mismatch; the value really is empty.
+- The conversion runs several times in sequence; dumping the *sliced* source
+  (`EMU_REGS=1415bf16b`, rsi) shows the machine properties flowing through:
+  "L140MU", "Not Applicable", "11th Gen…i7-1165G7", "BFEBFBFF000806C1", and "1".
+  The wstring at 0xAFD630 holds "1" (size 1) at the slicer 0x14BF16B but is empty
+  by the converter 0x14BEFC6 — i.e. the **substr/extraction in 0x14BF160-0x14BF1A1
+  slices ZERO characters out of the source "1" in the emulator** (a std::wstring
+  find/offset where the emulator's pointer math lands one wchar off), producing
+  the empty conversion input.
+- CAVEAT: at this depth the two runs' loop iterations can misalign (earlier benign
+  desyncs), so the exact "which pointer is wrong" in 0x14BF160 needs a same-run
+  capture (arm a watch on the specific slice at its known address) before naming
+  the single mis-executed emulator instruction. Solid, run-robust facts: the
+  0x14BEBF4 empty-range branch; size 0-vs-1 at 0x14BEFC6; the source wstring is
+  genuinely empty (memory-dumped); the token is the 2nd/validation stoi.
+
 ## Tools added this session (all reusable)
 
 - `scratch_ndbg.cpp` → `ndbg.exe` — minimal Win32 debugger: breakpoints at
