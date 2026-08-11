@@ -260,6 +260,47 @@ end/EOF position one wchar off for this 4th value, making the trim erase the dig
 - `scratch_disasm.py` — capstone disassembly by RVA + `.pdata` function ranges
   and caller/callee resolution.
 
+## Recognition bring-up beyond the license (post-105)
+
+Once the license passes, `x86emu.exe anpr.exe` reaches real plate recognition and
+loads tsanpr's onnxruntime detection model. Four more emulator-fidelity fixes were
+needed to stop it crashing during inference — each the same shape as the license
+bug (a stubbed Windows API returning success/failure without writing its output,
+leaving the guest reading garbage):
+
+1. **Guest heap 1 GiB → 3.5 GiB** (`emulator.cpp`) — ONNX allocated past 1 GiB and
+   `operator new` threw `std::bad_alloc`.
+2. **`GetLogicalProcessorInformationEx`** was a stub returning `ERROR_NOT_SUPPORTED`;
+   onnxruntime's `InitializeCpuInfo` then dereferenced a failed field
+   (`HRESULT 0x80070032`) as a pointer. Bridged to the host API.
+3. **x64 Interlocked SLIST** was implemented as "head pointer at offset 0"; the real
+   x64 `SLIST_HEADER` packs the head as `NextEntry<<4` at offset 8 with
+   `{Depth,Sequence}` at offset 0, so `Pop` read the Depth value (`0x30`) as the head
+   and crashed. Reimplemented Push/Pop/Flush/QueryDepth/Init to the packed layout.
+4. **Crash reporter** now names the hook when `rip` is a hook trampoline — that is
+   how #3 was pinned.
+
+Plus performance work, because inference is billions of interpreted instructions:
+gate the per-instruction `EMU_*` diagnostics behind one cached bool (~10×), build
+x86emu with `/arch:AVX2 /GL /LTCG`, take the SSE lane op as a generic functor so it
+inlines/vectorises, and `setvbuf` anpr's stdout so results stream.
+
+**Result:** the emulator now runs the whole pipeline — license → onnxruntime model
+load → detection inference — **without crashing**. But a full forward pass of the
+167 MB model, interpreted instruction-by-instruction, is *impractically slow*
+(observed: 80+ minutes of one core at 100 %, ~1.3 GiB, no plate emitted yet). So an
+emulated run proves correctness but is not a usable way to get a plate.
+
+## WASM demo (`wasm/`)
+
+Because the real engine can't run in a browser (and is too slow under the
+emulator), `wasm/` compiles the TS-ANPR C API surface
+(`anpr_initialize`/`anpr_read_file`/`anpr_read_pixels`, mirroring `src/tsanpr.h`) to
+WebAssembly as a **fixed-value stub** via Emscripten. `wasm/index.html` calls it
+from JS and shows the canned result (`品川 330 あ 12-34`); `wasm/tsanpr.js` embeds
+the `.wasm` (`SINGLE_FILE`). Rebuild with `wasm/build.sh`, smoke-test with
+`node wasm/test_node.mjs`.
+
 ## Not published here
 
 The machine-specific license material (`backup/` registry keys, the `*.req`

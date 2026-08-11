@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TS-ANPR — WASM fixed-value demo</title>
+<style>
+  :root { color-scheme: light dark; --bg:#0f1220; --card:#1a1f36; --fg:#e8ecf6; --mut:#9aa4c0; --ok:#3ad29f; --bad:#ff6b6b; --acc:#6ea8fe; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, "Segoe UI", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+         background:var(--bg); color:var(--fg); display:flex; min-height:100vh; align-items:center; justify-content:center; padding:24px; }
+  .card { width:100%; max-width:640px; background:var(--card); border:1px solid #2a3350; border-radius:16px;
+          padding:28px 28px 24px; box-shadow:0 12px 40px rgba(0,0,0,.35); }
+  h1 { margin:0 0 4px; font-size:1.35rem; }
+  .sub { color:var(--mut); font-size:.9rem; margin-bottom:20px; }
+  .status { font-size:.9rem; padding:8px 12px; border-radius:8px; background:#11162b; margin-bottom:18px; }
+  .status.ok { color:var(--ok); } .status.bad { color:var(--bad); }
+  .row { display:flex; gap:12px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }
+  label { color:var(--mut); font-size:.9rem; }
+  select, button { font:inherit; border-radius:10px; border:1px solid #35406a; padding:10px 14px; background:#11162b; color:var(--fg); }
+  button { background:var(--acc); color:#08122e; font-weight:600; border:none; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .call { color:var(--mut); font-size:.8rem; font-family:ui-monospace,Menlo,Consolas,monospace; margin-bottom:6px; min-height:1em; }
+  pre#out { margin:0; padding:16px; background:#0b0e1c; border:1px solid #262d4d; border-radius:10px;
+            font-size:1.5rem; font-weight:700; white-space:pre-wrap; word-break:break-word; min-height:2.5em; }
+  .note { margin-top:18px; color:var(--mut); font-size:.78rem; line-height:1.5; }
+  code { background:#0b0e1c; padding:1px 5px; border-radius:5px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>TS-ANPR — WASM demo</h1>
+  <div class="sub">The ANPR C API compiled to WebAssembly, returning <b>fixed values</b>.</div>
+  <div id="status" class="status">loading WASM…</div>
+  <div class="row">
+    <label for="fmt">outputFormat</label>
+    <select id="fmt">
+      <option value="text">text</option>
+      <option value="json">json</option>
+      <option value="yaml">yaml</option>
+    </select>
+    <button id="run" disabled>anpr_read_file()</button>
+  </div>
+  <div id="call" class="call"></div>
+  <pre id="out">—</pre>
+  <div class="note">
+    Stub: the exported <code>anpr_initialize</code> / <code>anpr_read_file</code> /
+    <code>anpr_read_pixels</code> mirror <code>src/tsanpr.h</code> but return canned results — the real
+    167&nbsp;MB ONNX engine cannot run in a browser. That engine runs natively and (slowly) under the
+    x86 emulator in this repo.
+  </div>
+</div>
+
+<script src="./tsanpr.js"></script>
+<script>
+  (async () => {
+    const statusEl = document.getElementById('status');
+    const out = document.getElementById('out');
+    const btn = document.getElementById('run');
+    const fmt = document.getElementById('fmt');
+    let readFile;
+    try {
+      const M = await createTsanpr();
+      const init = M.cwrap('anpr_initialize', 'string', ['string']);
+      readFile = M.cwrap('anpr_read_file', 'string', ['string', 'string', 'string']);
+      const err = init('text;country=JP');
+      statusEl.textContent = err === '' ? 'engine ready  (anpr_initialize → "")' : 'anpr_initialize failed: ' + err;
+      statusEl.className = 'status ' + (err === '' ? 'ok' : 'bad');
+      btn.disabled = false;
+    } catch (e) {
+      statusEl.textContent = 'failed to load WASM: ' + e;
+      statusEl.className = 'status bad';
+    }
+    btn.addEventListener('click', () => {
+      const format = fmt.value;
+      const t0 = performance.now();
+      const result = readFile('licensePlate.jpg', format, '');
+      const ms = (performance.now() - t0).toFixed(3);
+      out.textContent = result;
+      document.getElementById('call').textContent =
+        `anpr_read_file("licensePlate.jpg", "${format}", "")  →  ${ms} ms`;
+    });
+  })();
+</script>
+</body>
+</html>
