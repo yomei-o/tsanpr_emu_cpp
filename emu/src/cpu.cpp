@@ -1305,24 +1305,114 @@ void Cpu::step() {
         return b;
     }();
     if (g_gemm_probe && start == 0x1422f2002ull) {
-        static int gemm_n = 0;
-        if (gemm_n++ < 24) {
-            uint64_t sp = regs[RSP];
-            std::fprintf(stderr,
-                "[gemm] #%d rva=%llx rcx=%llx rdx=%llx r8=%llx r9=%llx rdi=%llx rsi=%llx r10=%llx r11=%llx\n",
-                gemm_n, (unsigned long long)(start - 0x140100000ull),
-                (unsigned long long)regs[RCX], (unsigned long long)regs[RDX],
-                (unsigned long long)regs[8], (unsigned long long)regs[9],
-                (unsigned long long)regs[RDI], (unsigned long long)regs[RSI],
-                (unsigned long long)regs[10], (unsigned long long)regs[11]);
-            std::fprintf(stderr, "[gemm]   sp=%llx stk", (unsigned long long)sp);
-            const uint64_t offs[] = {0xf8, 0x138, 0x140, 0x148, 0x150, 0x160, 0x168, 0x170};
-            for (uint64_t o : offs) {
-                uint64_t v = 0;
-                try { v = mem_.read64(sp + o); } catch (...) {}
-                std::fprintf(stderr, " [+%llx]=%llx", (unsigned long long)o, (unsigned long long)v);
+        // On the FIRST kernel entry, dump the sampling profile accumulated so far.
+        // Everything up to here is model load + pre-GEMM inference, so this report
+        // is exactly the "where does the time go before GEMM" breakdown (needs
+        // X86EMU_PROFILE=N on).  One-shot; costs nothing after the first fire.
+        static bool s_first_fire = true;
+        if (s_first_fire) {
+            s_first_fire = false;
+            if (profiling()) {
+                std::string r = profile_report();
+                std::fprintf(stderr, "[pre-gemm-profile] first GEMM reached; time up to here:\n%s", r.c_str());
+                std::fflush(stderr);
+            } else {
+                std::fprintf(stderr, "[pre-gemm-profile] first GEMM reached (set X86EMU_PROFILE=N for breakdown)\n");
             }
-            std::fprintf(stderr, "\n");
+        }
+        // VERIFY mode: at each kernel entry, (1) check the PREVIOUS call's C —
+        // now written by the real kernel — against the value we computed
+        // natively, and (2) compute this call's expected C and stash it.  The
+        // real kernel still runs, so this cannot corrupt recognition; it only
+        // tells us whether the ABI decode (A/B/C, strides, zero/accum) is right
+        // before we ever skip the kernel.  lda is unknown-ish, tunable.
+        auto rdf = [&](uint64_t a) -> float {
+            uint32_t u = 0; try { u = mem_.read32(a); } catch (...) {}
+            float f; std::memcpy(&f, &u, 4); return f;
+        };
+        // FAITHFUL TRANSCRIPTION of the M=3 kernel path (0x21f2494) + store
+        // (0x21f3bb0), from the full disassembly.  This is not a formula guess — it
+        // replays the exact pointer walk, so it must match C bit-for-bit (float order
+        // aside).  Once it does, this IS the native replacement.
+        //   tile = 3 rows x 8 cols, accumulators C_acc[3][8]
+        //   byte pointers: rcx=A(rdi), rdx=B(+0x80 bias)
+        //   m-block loop  x r11 = [rsp+0x138]:
+        //     k-iter loop x r12 = [rsp+0x140]:
+        //       if (rcx + r13 >= r14) skip MAC (K-edge mask); else
+        //         for s in 0..7:  a=A[rcx + s*4];  (8 contiguous A elems)
+        //           for m in 0..2, j in 0..7:
+        //             C_acc[m][j] += a * B[rdx + m*rsi + s*0x20 - 0x80 + j*4]
+        //       rcx += rbp(=[rsp+0x110]);  rdx += 0x100
+        //     rcx += r15(=[rsp+0x120]);  r13 -= [rsp+0x158]
+        //   store: flags=[rsp+0x180]: bit0 += C_cur, bit1 += bias[rsp+0x178], bit2 relu
+        struct Pend {
+            uint64_t A,B,C,rsi,ldc,rbp,r15,r13,r13dec,r14,r11,r12,bias; int flags;
+            std::vector<float> cinit; bool live=false;
+        };
+        static Pend p;
+        static int vn = 0;
+        uint64_t sp = regs[RSP];
+        uint64_t N = 0, M = 0;
+        try { N = mem_.read64(sp + 0x168); M = mem_.read64(sp + 0x138); } catch (...) {}
+
+        if (p.live && vn < 4) {
+            uint64_t rsi = p.rsi, ldc_f = p.ldc;
+            double Cacc[3][8]; for (int m=0;m<3;++m) for(int j=0;j<8;++j) Cacc[m][j]=0.0;
+            uint64_t rcx=p.A, rdx=p.B; int64_t r13=(int64_t)p.r13;
+            for (uint64_t mb=0; mb<p.r11; ++mb) {
+                for (uint64_t it=0; it<p.r12; ++it) {
+                    bool skip = ((uint64_t)(rcx + (uint64_t)r13) >= p.r14);
+                    if (!skip) {
+                        for (int s=0;s<8;++s) {
+                            float a = rdf(rcx + (uint64_t)s*4);
+                            for (int m=0;m<3;++m)
+                                for (int j=0;j<8;++j) {
+                                    float b = rdf(rdx + m*rsi + (uint64_t)s*0x20 - 0x80 + (uint64_t)j*4);
+                                    Cacc[m][j] += (double)a*b;
+                                }
+                        }
+                    }
+                    rcx += p.rbp; rdx += 0x100;
+                }
+                rcx += p.r15; r13 -= (int64_t)p.r13dec;
+            }
+            // store: replay flags (bit0 add current C, bit2 relu; bias bit1 skipped)
+            auto Cval = [&](int m,int j){ return rdf(p.C + ((uint64_t)m*ldc_f + j)*4); };
+            double emax=0, emax_norelu=0;
+            for (int m=0;m<3;++m) for (int j=0;j<8;++j) {
+                double v = Cacc[m][j];
+                if (p.flags & 1) v += p.cinit[m*8+j];            // bit0 accumulate onto C
+                double vn0 = v;
+                if (p.flags & 4) v = v<0?0:v;                    // bit2 ReLU
+                emax = std::max(emax, std::fabs(Cval(m,j)-v));
+                emax_norelu = std::max(emax_norelu, std::fabs(Cval(m,j)-vn0));
+            }
+            double emax_relu = emax;
+            if (vn==0)
+                std::fprintf(stderr,"[gcnt] rsi_f=%llu ldc_f=%llu r11=%llu r12=%llu r13=%llx r13dec=%llx r14=%llx rbp=%llu r15=%llu flags=%d C[0..2][0]=%.3f %.3f %.3f\n",
+                    (unsigned long long)(rsi/4),(unsigned long long)ldc_f,(unsigned long long)p.r11,
+                    (unsigned long long)p.r12,(unsigned long long)p.r13,(unsigned long long)p.r13dec,
+                    (unsigned long long)p.r14,(unsigned long long)(p.rbp/4),(unsigned long long)(p.r15/4),
+                    p.flags,Cval(0,0),Cval(1,0),Cval(2,0));
+            std::fprintf(stderr,"[gverify] #%d M=%llu N=%llu flags=%d err=%.5g err_relu=%.5g\n",
+                         ++vn,(unsigned long long)M,(unsigned long long)N,p.flags,emax,emax_relu);
+        }
+        if (M && N && M <= 64 && N <= 4096) {
+            auto rd = [&](uint64_t o)->uint64_t{ try{return mem_.read64(sp+o);}catch(...){return 0;} };
+            p.A=regs[RDI]; p.B=regs[RDX]; p.C=regs[8];
+            p.rsi=rd(0x128); p.ldc=rd(0x130)/4;
+            p.rbp=rd(0x110); p.r15=rd(0x120);
+            p.r11=rd(0x138); p.r12=rd(0x140);
+            p.r13=0 - rd(0x148);                              // neg r13
+            p.r13dec=rd(0x158); p.r14=rd(0x150);
+            p.bias=rd(0x178); p.flags=(int)rd(0x180);
+            if (!p.ldc) p.ldc=2560;
+            p.cinit.assign(3*8, 0.0f);
+            for (uint64_t m=0;m<3;++m) for (uint64_t j=0;j<8;++j)
+                p.cinit[m*8+j]=rdf(p.C+(m*p.ldc+j)*4);
+            p.live=true;
+        } else {
+            p.live=false;
         }
     }
 
