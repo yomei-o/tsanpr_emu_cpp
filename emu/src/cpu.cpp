@@ -1449,12 +1449,13 @@ void Cpu::step() {
     // base for this panel) and r8=C base, revealing exactly how they advance per
     // panel — the real per-panel A/C addressing the static analysis couldn't pin.
     if (g_gemm_probe && start == 0x1422f202aull) {   // emu base 0x140100000 + RVA 0x21F202A
+        // Probe fires BEFORE `mov rcx,rdi` executes, so read rdi (the real A base
+        // for this panel), r8 (C base), r10 (outer counter).  rcx here is stale.
         static int tn = 0;
-        if (tn < 16) {
-            std::fprintf(stderr,"[gtraj] #%d rcx=%llx r8=%llx rdx=%llx r9=%llx r10=%llx\n",
-                tn, (unsigned long long)regs[RCX], (unsigned long long)regs[8],
-                (unsigned long long)regs[RDX], (unsigned long long)regs[9],
-                (unsigned long long)regs[10]);
+        if (tn < 24) {
+            std::fprintf(stderr,"[gtraj] #%d rdi=%llx r8=%llx r10=%llx r9=%llx\n",
+                tn, (unsigned long long)regs[RDI], (unsigned long long)regs[8],
+                (unsigned long long)regs[10], (unsigned long long)regs[9]);
             ++tn;
         }
     }
