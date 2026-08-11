@@ -1549,6 +1549,79 @@ void Cpu::step() {
         }
     }
 
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__wasm__) && !defined(__EMSCRIPTEN__)
+    // AES-CBC decrypt native hook — the model-load bottleneck.  Function entry
+    // 0x135A310 (emu 0x14145A310): crypt(src=rcx, dst=rdx, len=r8, key=r9,
+    // iv=[rsp+0x28], enc=[rsp+0x30]); enc==0 => CBC DECRYPT.  Round keys are the
+    // decryption schedule at `key` (read forward + aesdec), with Nr-1 = [key+0xf0].
+    // Replicate exactly: state = C ^ K[0]; aesdec K[1..Nr1]; aesdeclast K[Nr1+1];
+    // P = state ^ prev (prev = IV, then previous ciphertext); finally IV := last C.
+    // Bypasses ~150M emulated SSE/aesdec dispatches over the 167MB model.
+    static const bool g_aes_hook = std::getenv("EMU_AES_HOOK") != nullptr;  // verify
+    static const bool g_aes_skip = std::getenv("EMU_AES_SKIP") != nullptr;  // replace
+    if ((g_aes_hook || g_aes_skip) && start == 0x14145a310ull) {
+        uint64_t sp = regs[RSP];
+        uint64_t src = regs[RCX], dst = regs[RDX], len = regs[8], key = regs[9], iv = 0, flag = 1;
+        try { iv = mem_.read64(sp + 0x28); flag = mem_.read64(sp + 0x30); } catch (...) {}
+        uint32_t Nr1 = 0; try { Nr1 = mem_.read32(key + 0xf0); } catch (...) {}
+        { static int hn = 0; if (hn < 12) { std::fprintf(stderr,
+            "[aeshit] #%d src=%llx dst=%llx len=%llu key=%llx flag=%llu Nr1=%u\n",
+            ++hn, (unsigned long long)src, (unsigned long long)dst, (unsigned long long)len,
+            (unsigned long long)key, (unsigned long long)flag, Nr1); } }
+        if ((uint32_t)flag == 0 && len > 0 && (len % 16) == 0 && len <= 0x40000000ull && Nr1 >= 1 && Nr1 <= 20) {
+            auto ld = [&](uint64_t a) -> __m128i {
+                uint8_t b[16]; mem_.read(a, b, 16); return _mm_loadu_si128((const __m128i*)b);
+            };
+            bool ok = true;
+            bool verify = g_aes_hook && !g_aes_skip;
+            static std::vector<uint8_t> out;
+            __m128i lastc = _mm_setzero_si128();
+            try {
+                __m128i K[24];
+                for (uint32_t i = 0; i < Nr1 + 2; ++i) K[i] = ld(key + (uint64_t)i * 16);
+                __m128i prev = ld(iv);
+                uint64_t nb = len / 16;
+                if (verify) out.resize((size_t)len);
+                for (uint64_t b = 0; b < nb; ++b) {
+                    __m128i c = ld(src + b * 16);
+                    __m128i s = _mm_xor_si128(c, K[0]);
+                    for (uint32_t i = 1; i <= Nr1; ++i) s = _mm_aesdec_si128(s, K[i]);
+                    s = _mm_aesdeclast_si128(s, K[Nr1 + 1]);
+                    s = _mm_xor_si128(s, prev);
+                    prev = c; lastc = c;
+                    uint8_t ob[16]; _mm_storeu_si128((__m128i*)ob, s);
+                    if (verify) std::memcpy(&out[b * 16], ob, 16);
+                    else mem_.write(dst + b * 16, ob, 16);
+                }
+            } catch (...) { ok = false; }
+            if (ok && g_aes_skip) {
+                uint8_t ivb[16]; _mm_storeu_si128((__m128i*)ivb, lastc);
+                try { mem_.write(iv, ivb, 16); } catch (...) {}
+                regs[RAX] = dst;
+                try { rip = mem_.read64(sp); regs[RSP] = sp + 8; ++instructions_executed; } catch (...) { return; }
+                static uint64_t naes = 0;
+                if (((++naes) & 0x3ff) == 1)
+                    std::fprintf(stderr, "[aesskip] calls=%llu len=%llu Nr1=%u\n",
+                                 (unsigned long long)naes, (unsigned long long)len, Nr1);
+                return;
+            }
+            if (ok && verify) {                          // compare previous call's dst vs our result
+                static uint64_t pdst = 0, plen = 0; static std::vector<uint8_t> pexp; static int vn = 0;
+                if (pdst && vn < 8) {
+                    uint64_t mism = 0;
+                    for (uint64_t i = 0; i < plen; ++i) {
+                        uint8_t rb = 0; try { rb = (uint8_t)mem_.read_sized(pdst + i, 1); } catch (...) {}
+                        if (rb != pexp[i]) ++mism;
+                    }
+                    std::fprintf(stderr, "[aesverify] #%d len=%llu mismatches=%llu\n",
+                                 ++vn, (unsigned long long)plen, (unsigned long long)mism);
+                }
+                pdst = dst; plen = len; pexp = out;
+            }
+        }
+    }
+#endif
+
     // Every EMU_*/env-gated diagnostic below is off in an ordinary run.  Each was
     // calling std::getenv PER env var PER instruction just to establish that —
     // ruinous for a long run (model inference is billions of instructions).  Cache
