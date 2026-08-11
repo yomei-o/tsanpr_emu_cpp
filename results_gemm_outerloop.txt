@@ -1,0 +1,29 @@
+# GEMM outer-loop resolution (2026-08-11)
+# The M>=4 kernel does NOT cleanly loop r10=160 panels. rdi advances +0x40/panel,
+# C(r8) +0x20/panel. Around panel ~10 the tile's B read (movups [rdx-0x60] @0x21f210e)
+# hits UNMAPPED memory -> access violation -> SEH unwind funclet @0x14a1a1f
+# (add rsp,0x20; pop rdi; ret) -> returns to caller. So output is truncated to the
+# valid-A/B panels; C beyond stays 0 (correct padding). r10=160 is an over-count.
+# first_bad (valid panel count) varies per call (9,9,10,109) = where the buffer ends.
+
+## outer-top trajectory (rdi +0x40, r10 a0->97 then fault->reentry):
+  rdi=17c831760 r10=a0
+  rdi=17c8317a0 r10=9f
+  rdi=17c8317e0 r10=9e
+  rdi=17c831820 r10=9d
+  rdi=17c831860 r10=9c
+  rdi=17c8318a0 r10=9b
+  rdi=17c8318e0 r10=9a
+  rdi=17c831920 r10=99
+  rdi=17c831960 r10=98
+  rdi=17c8319a0 r10=97
+  rdi=17c8f6f60 r10=a0
+
+## exit sequence (last kernel instr -> SEH funclet -> caller):
+  21f2103
+  21f2109
+  14a1a1f
+  14a1a24
+  14a1a28
+  14a1a29
+  209e5f8

@@ -33,3 +33,14 @@ print("=== M>=4 inner loop full 0x21f2079..0x21f2467 : A reads + advances ===")
 dis(0x21f2079,0x3f0)
 print("=== M>=4 outer body head 0x21f202a..0x21f2079 (what resets/advances per panel) ===")
 dis(0x21f202a,0x4f)
+print("=== ALL branches in M>=4 path 0x21f2012..0x21f2494 ===")
+import capstone as cap
+off=rva2off(0x21f2012); code=data[off:off+(0x21f2494-0x21f2012)]
+for ins in md.disasm(code, imgbase+0x21f2012):
+    m=ins.mnemonic
+    if m[0]=='j' or m.startswith('call') or m.startswith('loop') or m=='ret':
+        print("  %x: %-7s %s"%(ins.address-imgbase,m,ins.op_str))
+print("=== 0x21f210e (instr after the shufps at exit) ===")
+dis(0x21f210e,0x10)
+print("=== 0x14a1a1f (transfer target) ===")
+dis(0x14a1a1f,0x30)

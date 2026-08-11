@@ -1448,15 +1448,20 @@ void Cpu::step() {
     // TRAJECTORY LOG: the M>=4 outer-loop top (0x21F202A).  At each hit rcx=rdi (A
     // base for this panel) and r8=C base, revealing exactly how they advance per
     // panel — the real per-panel A/C addressing the static analysis couldn't pin.
-    if (g_gemm_probe && start == 0x1422f202aull) {   // emu base 0x140100000 + RVA 0x21F202A
-        // Probe fires BEFORE `mov rcx,rdi` executes, so read rdi (the real A base
-        // for this panel), r8 (C base), r10 (outer counter).  rcx here is stale.
-        static int tn = 0;
-        if (tn < 24) {
-            std::fprintf(stderr,"[gtraj] #%d rdi=%llx r8=%llx r10=%llx r9=%llx\n",
-                tn, (unsigned long long)regs[RDI], (unsigned long long)regs[8],
-                (unsigned long long)regs[10], (unsigned long long)regs[9]);
-            ++tn;
+    // Efficient instruction tracer (no per-instruction getenv — gated by the cached
+    // g_gemm_probe bool).  Armed on the first M>=4 outer-loop top (0x1422F202A); logs
+    // the next N DLL instructions' rip(RVA)+key regs so the outer-loop EXIT control
+    // flow (the r10=160-vs-~10-iters puzzle) is visible.
+    if (g_gemm_probe) {
+        static int trace_left = 0; static bool armed_once = false;
+        if (!armed_once && start == 0x1422f202aull) { armed_once = true; trace_left = 15000; }
+        if (trace_left > 0 && start >= 0x140100000ull && start < 0x150000000ull) {
+            --trace_left;
+            std::fprintf(stderr,"IT %llx rdi=%llx r8=%llx r10=%llx rax=%llx r11=%llx\n",
+                (unsigned long long)(start-0x140100000ull),
+                (unsigned long long)regs[RDI],(unsigned long long)regs[8],
+                (unsigned long long)regs[10],(unsigned long long)regs[RAX],
+                (unsigned long long)regs[11]);
         }
     }
 
