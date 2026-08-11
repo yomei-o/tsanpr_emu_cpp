@@ -303,6 +303,26 @@ and the final option-variant (surround.jpg `dms`) hit the emulator's 100-billion
 end but is far too slow to be a usable ANPR service — which is exactly why the
 browser demo below returns fixed values.
 
+## Native acceleration hooks (2026-08-12)
+
+The emulated run is correct but slow in two concentrated places, both now hooked
+out to native code (bit/numerically verified — recognition of all sample plates
+stays identical). Full reusable writeup: **`docs/onnxruntime-acceleration.md`**.
+
+| Flag | What it does | Verified | Effect |
+|------|--------------|----------|--------|
+| `EMU_GEMM_SKIP=1` | replaces the MLAS SGEMM kernel's emulated k-loop with a native 4×8 tile (writes xmm0-7, jumps to the kernel's own store; outer loop / buffer-overrun fault / SEH untouched) | tile math err ≈ 1e-6 vs real | inference goes from the "~3-hour part" to ~seconds; first plate right after load |
+| `EMU_AES_SKIP=1` | native host-AES-NI AES-256-CBC decrypt of the 167 MB model in one pass (function `0x135A310`) | **0 byte mismatches** over 167 MB | GEMM/inference starts ~145 s sooner |
+| `EMU_ZERO_HOOK=1` | native fill for the int-array zero-fill leaf (`0x1E04ED0`), the top load hot loop | recognition unchanged | a few more seconds off load |
+| `EMU_STDOUT_TTY=1` | report stdout as a char device so the guest CRT line-buffers (results show during a redirected run) | — | usability |
+| `EMU_GEMM=1`, `EMU_AES_HOOK=1` | verify harnesses (compute native, compare to the real kernel/function) | — | validation only |
+
+Recognition with all hooks on (`results/aes_gemm_skip_recognition.txt`): 多摩500さ4649
++ the five multiple.jpg plates, exactly matching the fully-emulated run. First-plate
+CPU time: 585 s (GEMM-only) → 557 s (+AES) → 539 s (+zero). The **remaining** load
+time is the emulated ONNX protobuf-parse / graph-build of the decrypted model — a
+diffuse, interpreter-bound cost with no single big target (a JIT would be the lever).
+
 ## WASM demo (`wasm/`)
 
 Because the real engine can't run in a browser (and is too slow under the
