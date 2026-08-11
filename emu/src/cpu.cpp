@@ -1304,6 +1304,90 @@ void Cpu::step() {
         if (b) std::fprintf(stderr, "[gemm] probe armed (watching tsanpr.dll 0x21F2xxx)\n");
         return b;
     }();
+    // EMU_GEMM_SKIP: replace the slow emulated MLAS SGEMM kernel (CountM==4 path)
+    // with a native computation of its output tiles.  Verified tile math (err~1e-6):
+    // per panel t, A base = rdi + t*0x40, C base = r8 + t*0x20, a 4x8 tile
+    //   C[m][j] = Σ over 2 m-blocks × r12 k-iters × 8 sub of A[..]·B[rdx+m*rsi+..],
+    // gated by the K-edge mask (rcx+r13 < r14).  The real kernel loops r10 (=160)
+    // but runs off the end of the A/B buffer around panel ~first_bad and is
+    // truncated by an access-violation/SEH unwind (rest of C left 0).  We mirror
+    // that: compute panels only while their reads are MAPPED, stop at the first
+    // faulting panel, then return via the normal epilogue (0x21F2CD1).  Skips the
+    // ~1000-instruction emulated k-loop per panel.  Bias (flags bit1) -> fall back.
+    static const bool g_gemm_skip = [] {
+        bool b = std::getenv("EMU_GEMM_SKIP") != nullptr;
+        if (b) std::fprintf(stderr, "[gemm] SKIP mode armed (native GEMM tiles)\n");
+        return b;
+    }();
+    // SAFE inner-loop replacement: hook the M≥4 tile just before its k-loop
+    // (0x21F2070, after `xorps xmm0..7`), compute the 4×8 accumulators natively,
+    // write them into xmm0..7, and jump to the STORE setup (0x21F2467).  The
+    // kernel's own outer loop, store (which applies accumulate/bias/ReLU), buffer
+    // over-run fault and SEH unwind ALL run unchanged — we only skip the ~1000
+    // emulated k-loop instructions per panel, so control flow is byte-identical.
+    // If any tile read is unmapped (the panel that runs off the buffer end), do
+    // NOT skip — let the real k-loop run so it faults exactly as before.
+    if (g_gemm_skip && start == 0x1422f2070ull && mem_.read64(regs[RSP] + 0x118) == 4) {
+        uint64_t A = regs[RCX], B = regs[RDX];            // rcx=A(this panel), rdx=B (both set)
+        uint64_t rsi = regs[RSI], rbp = regs[RBP];
+        uint64_t r11 = regs[11], r12 = regs[12], r15 = regs[15];
+        int64_t  r13_0 = (int64_t)regs[13];               // already negated by the path
+        uint64_t r14 = regs[14];
+        int64_t  r13dec = (int64_t)mem_.read64(regs[RSP] + 0x158);   // per-m-block r13 step
+        static uint64_t s_calls = 0;
+        if (r11 <= 64 && r12 <= 4096) {
+            // Fast reads: read32 uses the cached TLB/host_ptr and THROWS a
+            // MemoryFault only on a truly-unmapped page (a reserved page reads as 0,
+            // exactly what the real kernel would get).  So wrap the whole tile in one
+            // try — no per-read is_mapped (that map lookup made the skip slower than
+            // the emulated loop).  A throw == the real kernel's buffer over-run: bail
+            // and let the emulated k-loop run and fault identically.
+            auto f32 = [&](uint64_t a) -> float {
+                uint32_t u = mem_.read32(a); float f; std::memcpy(&f, &u, 4); return f;
+            };
+            double Cacc[4][8]; for (int m=0;m<4;++m) for(int j=0;j<8;++j) Cacc[m][j]=0.0;
+            bool fault = false;
+            try {
+                uint64_t rcx = A, rdx = B; int64_t r13 = r13_0;
+                for (uint64_t mb = 0; mb < r11; ++mb) {
+                    for (uint64_t it = 0; it < r12; ++it) {
+                        if ((uint64_t)(rcx + (uint64_t)r13) < r14) {
+                            for (int s = 0; s < 8; ++s) {
+                                float a = f32(rcx + (uint64_t)s*4);
+                                const uint64_t brow = rdx + (uint64_t)s*0x20 - 0x80;
+                                for (int m = 0; m < 4; ++m) {
+                                    uint64_t bp = brow + (uint64_t)m*rsi;
+                                    for (int j = 0; j < 8; ++j)
+                                        Cacc[m][j] += (double)a * f32(bp + (uint64_t)j*4);
+                                }
+                            }
+                        }
+                        rcx += rbp; rdx += 0x100;
+                    }
+                    rcx += r15; r13 -= r13dec;
+                }
+            } catch (...) { fault = true; }
+            if (!fault) {
+                // write raw accumulators to xmm0..7 (xmm[2m]=row m cols0-3, xmm[2m+1]=cols4-7)
+                for (int m = 0; m < 4; ++m) {
+                    auto pack = [](float f0, float f1) -> uint64_t {
+                        uint32_t a, b; std::memcpy(&a,&f0,4); std::memcpy(&b,&f1,4);
+                        return (uint64_t)a | ((uint64_t)b << 32);
+                    };
+                    xmm[2*m].q[0]   = pack((float)Cacc[m][0], (float)Cacc[m][1]);
+                    xmm[2*m].q[1]   = pack((float)Cacc[m][2], (float)Cacc[m][3]);
+                    xmm[2*m+1].q[0] = pack((float)Cacc[m][4], (float)Cacc[m][5]);
+                    xmm[2*m+1].q[1] = pack((float)Cacc[m][6], (float)Cacc[m][7]);
+                }
+                if (((++s_calls) & 0x3fff) == 1)
+                    std::fprintf(stderr, "[gskip] tile-skips=%llu\n", (unsigned long long)s_calls);
+                rip = 0x1422f2467ull;                     // -> store setup; outer loop/fault untouched
+                ++instructions_executed;
+                return;
+            }
+            // fault: fall through, let the real k-loop run and fault as usual
+        }
+    }
     if (g_gemm_probe && start == 0x1422f2002ull) {
         // On the FIRST kernel entry, dump the sampling profile accumulated so far.
         // Everything up to here is model load + pre-GEMM inference, so this report

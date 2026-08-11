@@ -117,6 +117,10 @@ FileTable::FileTable() {
     files_[0] = standard(stdin, "<stdin>", true, false);
     files_[1] = standard(stdout, "<stdout>", false, true);
     files_[2] = standard(stderr, "<stderr>", false, true);
+    // EMU_STDOUT_TTY: report stdout as a character device so the guest CRT
+    // line-buffers instead of full-buffering — makes recognition output appear
+    // during a run whose stdout is redirected to a file, not only at exit.
+    if (std::getenv("EMU_STDOUT_TTY")) files_[1].is_tty = true;
 }
 
 std::string FileTable::host_path(const std::string& guest_path) {
