@@ -79,6 +79,31 @@ and confirm the hook fires.
 - This is **load-time only**. It does nothing for inference — that's the GEMM hook.
 - Bit-identical, so it can never change recognition output; safe to always enable on x86.
 
+### The bigger AES win: hook the whole decrypt FUNCTION, not the instruction
+Per-opcode AES-NI still pays the emulator's **decode+dispatch (~75 host ops) per
+`aesdec`**, and the model is one ~167 MB CBC decrypt = ~150 M emulated SSE/aesdec
+dispatches (minutes). Far better: **hook the decrypt function entry and do the entire
+buffer natively.** Here the model is decrypted by a single call to
+`crypt(src=rcx, dst=rdx, len=r8, key=r9, iv=[rsp+0x28], enc=[rsp+0x30])` (entry
+`0x135A310`). Decode it from the single-block path:
+
+- `enc` is tested **32-bit** (`test r9d,r9d`) — the guest passes `0x100000000`, so gate on
+  `(uint32_t)enc == 0` (== decrypt), NOT the full 64-bit value. This bit cost real time to
+  spot.
+- **AES-256-CBC**, round keys are the *decryption* schedule at `key` (read forward + `aesdec`
+  directly), with **Nr−1 = `[key+0xf0]` = 13** (15 round keys).
+- Native, bit-identical: `state = C ^ K[0]; for i in 1..13: aesdec(state, K[i]);
+  aesdeclast(state, K[14]); P = state ^ prev` where `prev` = IV for block 0 then the previous
+  ciphertext block; afterwards write the last ciphertext block back to the IV.
+
+Verify before skipping (compute native into a buffer, let the real function run, compare its
+`dst` on the next call): here it matched at **0 mismatches over all 167 MB**. Then in skip
+mode: decrypt natively (host AES-NI, one pass, ~0.1 s), write `dst`, set the IV, and return
+via `rip=[rsp]; rsp+=8` (hook is at the pre-prologue entry, so no epilogue needed).
+`EMU_AES_SKIP` makes inference/GEMM start ~145 s sooner. NOTE the remaining load cost is the
+emulated **protobuf parse + graph build** of the decrypted model (~440 s here) — a separate,
+interpreter-bound problem the AES hook does not touch.
+
 ---
 
 ## 2. GEMM hook — accelerate inference (the real bottleneck)
@@ -226,8 +251,17 @@ a single predest branch. This alone was ~10× on inference here.
 
 ---
 
-*Status in this repo:* AES-NI hook — **done, bit-identical, shipping**. GEMM hook — the
-custom kernel is **fully disassembled and the M=3 path transcribed + numerically verified at
-err ≈ 1e-6** (harness in `emu/src/cpu.cpp` behind `EMU_GEMM=1`, which also dumps the pre-GEMM
-profile on first fire). Remaining: transcribe the M=1/2/≥4 paths and flip to replace-mode at
-the function entry. See the project memory `anpr-onnx-bringup` for live status.
+*Status in this repo (all working, in `emu/src/cpu.cpp`):*
+- **AES-NI opcode hook** — done, bit-identical, always on (x86).
+- **AES decrypt FUNCTION hook** (`EMU_AES_SKIP`) — native AES-256-CBC decrypt of the 167 MB
+  model, verified **0 mismatches**; skips ~150 M emulated dispatches, GEMM starts ~145 s sooner.
+- **GEMM kernel hook** (`EMU_GEMM_SKIP`) — the M≥4 tile's k-loop is replaced by a native 4×8
+  tile written into xmm0-7, jumping to the kernel's own store (leaving the outer loop / buffer
+  over-run fault / SEH untouched). Recognizes 多摩500さ4649 and all sample plates correctly,
+  first plate right after load instead of ~3 h of emulated inference.
+- Verify harnesses: `EMU_GEMM=1` (err ≈ 1e-6 tile check + pre-GEMM profile), `EMU_AES_HOOK=1`
+  (decrypt mismatch check). `EMU_STDOUT_TTY=1` line-buffers guest stdout so results show
+  during a redirected run.
+
+Remaining load cost is the emulated protobuf-parse / graph-build of the decrypted model — an
+interpreter-speed problem, not an AES/GEMM one. See project memory `anpr-onnx-bringup`.
