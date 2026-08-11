@@ -37,6 +37,15 @@ void* lookup_host_handle(uint64_t token);
 bool release_host_handle(uint64_t token);
 bool is_host_handle(uint64_t token);
 
+// A frozen wall-clock time for the guest, in unix epoch seconds.  The TS-ANPR
+// trial licence is time-limited; letting the guest read the real clock makes it
+// expire ~a week after issue.  This returns a fixed timestamp inside the validity
+// window so the licence never ages.  Override with EMU_FAKE_TIME=<unix_seconds>,
+// or EMU_FAKE_TIME=0 to fall back to the real host clock.  Only wall-clock/date
+// APIs use this; monotonic counters (GetTickCount/QueryPerformanceCounter) keep
+// tracking the instruction count so elapsed-time loops still terminate.
+long long guest_time_now();
+
 // Thrown by the unwinder to abandon everything between a throw and its handler.
 // The emulator's own call stack mirrors the guest's while handlers run - a
 // language handler is guest code called from the dispatcher - so transferring

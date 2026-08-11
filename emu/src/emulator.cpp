@@ -6,6 +6,8 @@
 #include <cinttypes>
 #include <limits>
 #include <cstring>
+#include <cstdlib>
+#include <ctime>
 
 #include "processes.h"
 
@@ -18,6 +20,35 @@ extern "C" char** environ;
 #endif
 
 namespace x86emu {
+
+// See emulator.h.  Default: 2026-08-11 12:00:00 UTC — a date the TS-ANPR trial
+// licence was known valid on this machine, frozen so it never expires.
+long long guest_time_now() {
+    static const long long frozen = [] () -> long long {
+        if (const char* e = std::getenv("EMU_FAKE_TIME")) {
+            char* end = nullptr;
+            long long v = std::strtoll(e, &end, 10);
+            if (end != e) {
+                // EMU_FAKE_TIME=0 means "use the real clock".
+                return v != 0 ? v : static_cast<long long>(std::time(nullptr));
+            }
+        }
+        std::tm tm{};
+        tm.tm_year = 2026 - 1900;
+        tm.tm_mon = 8 - 1;
+        tm.tm_mday = 11;
+        tm.tm_hour = 12;
+        tm.tm_min = 0;
+        tm.tm_sec = 0;
+#if defined(_WIN32)
+        long long t = static_cast<long long>(_mkgmtime(&tm));
+#else
+        long long t = static_cast<long long>(timegm(&tm));
+#endif
+        return t > 0 ? t : 1786000000ll;  // fallback ~2026-08 if mktime fails
+    }();
+    return frozen;
+}
 
 Emulator::Emulator(Options opt) : opt_(opt) {}
 Emulator::~Emulator() {

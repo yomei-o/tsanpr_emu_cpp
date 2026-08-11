@@ -431,7 +431,7 @@ void Emulator::install_libc_hooks() {
 
     // ---- time -----------------------------------------------------------------------
     libc("_time64", [](Emulator& e) {
-        auto now = static_cast<uint64_t>(std::time(nullptr));
+        auto now = static_cast<uint64_t>(guest_time_now());
         if (e.arg_slot(0)) e.mem.write64(e.arg_slot(0), now);
         e.set_result(now);
     });

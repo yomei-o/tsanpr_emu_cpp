@@ -657,7 +657,7 @@ void Emulator::install_win32_hooks() {
     // ---- time ----------------------------------------------------------------
     auto file_time = [](Emulator& e) {
         // FILETIME counts 100 ns ticks since 1601; 11644473600 s to the epoch.
-        uint64_t ticks = (static_cast<uint64_t>(std::time(nullptr)) + 11644473600ull) * 10000000ull;
+        uint64_t ticks = (static_cast<uint64_t>(guest_time_now()) + 11644473600ull) * 10000000ull;
         uint64_t p = e.arg_slot(0);
         if (p) e.mem.write64(p, ticks);
         e.set_result(0);

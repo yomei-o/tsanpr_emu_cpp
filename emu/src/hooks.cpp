@@ -349,7 +349,7 @@ void Emulator::install_library_hooks() {
 
     // ---- misc runtime ------------------------------------------------------
     libc("time", [](Emulator& e) {
-        auto now = static_cast<uint64_t>(std::time(nullptr));
+        auto now = static_cast<uint64_t>(guest_time_now());
         uint64_t out = e.arg_slot(0);
         if (out) e.mem.write_sized(out, e.is64() ? 8 : 4, now);
         e.set_result(now);

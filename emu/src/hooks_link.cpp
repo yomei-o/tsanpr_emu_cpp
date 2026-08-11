@@ -113,7 +113,7 @@ void Emulator::install_link_hooks() {
 
     // ---- kernel32: time -----------------------------------------------------
     win32("GetSystemTime", 1, [](Emulator& e) {
-        std::time_t now = std::time(nullptr);
+        std::time_t now = static_cast<std::time_t>(guest_time_now());
         std::tm tm{};
 #if defined(_WIN32)
         gmtime_s(&tm, &now);

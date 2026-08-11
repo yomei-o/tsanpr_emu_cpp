@@ -2264,7 +2264,7 @@ void Emulator::install_cl_hooks() {
     ucrt("_ftime64_s", [](Emulator& e) {
         uint64_t p = e.arg_slot(0);
         if (p) {
-            e.mem.write64(p, static_cast<uint64_t>(std::time(nullptr)));  // time
+            e.mem.write64(p, static_cast<uint64_t>(guest_time_now()));  // time
             e.mem.write16(p + 8, 0);   // millitm
             e.mem.write16(p + 10, 0);  // timezone
             e.mem.write16(p + 12, 0);  // dstflag

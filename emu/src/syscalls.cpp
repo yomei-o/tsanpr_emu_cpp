@@ -630,7 +630,7 @@ int64_t do_syscall(Emulator& e, Sys sys, const uint64_t a[6]) {
             return host_chdir(FileTable::host_path(entry->path));
         }
         case Sys::Time: {
-            auto now = static_cast<int64_t>(std::time(nullptr));
+            auto now = static_cast<int64_t>(guest_time_now());
             if (a[0]) e.mem.write_sized(a[0], e.pointer_size(), static_cast<uint64_t>(now));
             return now;
         }

@@ -339,7 +339,7 @@ void Emulator::install_win32_dll_hooks() {
         e.set_result(w.size() + 1);
     });
     win32("GetLocalTime", 1, [](Emulator& e) {
-        std::time_t now = std::time(nullptr);
+        std::time_t now = static_cast<std::time_t>(guest_time_now());
         std::tm tm{};
 #if defined(_WIN32)
         gmtime_s(&tm, &now);
