@@ -50,6 +50,84 @@ long long guest_time_now() {
     return frozen;
 }
 
+// ---------------------------------------------------------------------------
+// Host-oracle record / replay
+//
+// On a real Windows machine the licence check reads the machine's identity from
+// WMI, the registry, HID devices and the network adapter table — host APIs a
+// WASM build has no access to.  So record, on Windows, exactly what each of
+// those hooks writes into guest memory (and returns), and replay it byte-for-
+// byte where there is no host.  The guest is deterministic given the same
+// answers, so the Nth recorded call lines up with the Nth replayed call.
+namespace {
+bool is_host_oracle(const std::string& n) {
+    auto pre = [&](const char* p) { return n.rfind(p, 0) == 0; };
+    auto has = [&](const char* p) { return n.find(p) != std::string::npos; };
+    // The COM plumbing (QueryInterface/AddRef/Release/ConnectServer/Reset) is
+    // deterministic guest-object bookkeeping and must NOT be replayed; only the
+    // calls that actually carry host data are recorded.
+    if (n == "QueryInterface" || n == "AddRef" || n == "Release") return false;
+    // Only the calls that have NO working off-Windows path and that feed the
+    // machine fingerprint / licence: the registry, WMI query results, HID and
+    // the network adapter table.  Deterministic or fall-back-able calls
+    // (GetStringTypeW's ASCII path, CPU-info, directories) are NOT replayed —
+    // recording them made the call order diverge between the Windows record and
+    // the WASM replay.
+    return pre("Reg") ||
+           has("ExecQuery") || has("::Get") || has("::Next") ||
+           pre("SetupDi") || pre("HidD_") || pre("HidP_") ||
+           has("IfTable") || has("IfEntry") || has("AdaptersInfo") || has("AdaptersAddresses") ||
+           pre("GetComputerName") || pre("GetVolumeInformation");
+}
+
+struct HostRec {
+    std::string name;
+    uint64_t rax = 0;
+    std::vector<std::pair<uint64_t, unsigned char>> writes;
+};
+std::FILE* g_hostrec_file = nullptr;          // record: append here
+std::vector<HostRec> g_hostrep;               // replay: in order
+size_t g_hostrep_pos = 0;
+
+void hostrec_write(const HostRec& r) {
+    if (!g_hostrec_file) return;
+    uint32_t nl = static_cast<uint32_t>(r.name.size());
+    std::fwrite(&nl, 4, 1, g_hostrec_file);
+    std::fwrite(r.name.data(), 1, nl, g_hostrec_file);
+    std::fwrite(&r.rax, 8, 1, g_hostrec_file);
+    uint32_t nw = static_cast<uint32_t>(r.writes.size());
+    std::fwrite(&nw, 4, 1, g_hostrec_file);
+    for (auto& w : r.writes) {
+        std::fwrite(&w.first, 8, 1, g_hostrec_file);
+        std::fwrite(&w.second, 1, 1, g_hostrec_file);
+    }
+    std::fflush(g_hostrec_file);  // survive an early kill once the licence has passed
+}
+
+bool hostrep_load(const char* path) {
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f) return false;
+    for (;;) {
+        uint32_t nl = 0;
+        if (std::fread(&nl, 4, 1, f) != 1) break;
+        HostRec r;
+        r.name.resize(nl);
+        if (nl && std::fread(&r.name[0], 1, nl, f) != nl) break;
+        if (std::fread(&r.rax, 8, 1, f) != 1) break;
+        uint32_t nw = 0;
+        if (std::fread(&nw, 4, 1, f) != 1) break;
+        r.writes.resize(nw);
+        for (uint32_t i = 0; i < nw; ++i) {
+            if (std::fread(&r.writes[i].first, 8, 1, f) != 1) { std::fclose(f); return false; }
+            if (std::fread(&r.writes[i].second, 1, 1, f) != 1) { std::fclose(f); return false; }
+        }
+        g_hostrep.push_back(std::move(r));
+    }
+    std::fclose(f);
+    return true;
+}
+}  // namespace
+
 Emulator::Emulator(Options opt) : opt_(opt) {}
 Emulator::~Emulator() {
     // The profile is printed here rather than by the caller: every front end
@@ -303,7 +381,54 @@ bool Emulator::dispatch_hook(uint64_t addr) {
     if (opt_.trace_calls && idx != 0)
         std::fprintf(stderr, "[hook] %s\n", h.name.c_str());
 
-    h.fn(*this);
+    // Host-oracle record/replay mode, resolved once.  0=off, 1=record, 2=replay.
+    static const int host_mode = [] {
+        if (const char* p = std::getenv("EMU_HOSTREC")) {
+            g_hostrec_file = std::fopen(p, "wb");
+            return g_hostrec_file ? 1 : 0;
+        }
+        if (const char* p = std::getenv("EMU_HOSTREP")) {
+            if (hostrep_load(p)) {
+                std::fprintf(stderr, "[hostrep] loaded %zu records from %s\n",
+                             g_hostrep.size(), p);
+                return 2;
+            }
+        }
+        return 0;
+    }();
+
+    if (host_mode && idx != 0 && is_host_oracle(h.name)) {
+        if (host_mode == 2) {
+            if (g_hostrep_pos < g_hostrep.size()) {
+                const HostRec& r = g_hostrep[g_hostrep_pos++];
+                if (r.name != h.name)
+                    std::fprintf(stderr, "[hostrep] desync at %zu: expected '%s' got '%s'\n",
+                                 g_hostrep_pos - 1, r.name.c_str(), h.name.c_str());
+                // The recorded hook, on Windows, reserved whatever pages it wrote
+                // (e.g. GetIfTable2Ex's output table); replay skips the hook, so
+                // reserve each touched page first or the write faults.
+                uint64_t last_page = ~0ull;
+                for (const auto& w : r.writes) {
+                    uint64_t pg = w.first >> 12;
+                    if (pg != last_page) { mem.map(w.first & ~0xFFFull, 4096); last_page = pg; }
+                    mem.write8(w.first, w.second);
+                }
+                set_result(r.rax);
+            } else {
+                std::fprintf(stderr, "[hostrep] out of records at '%s'\n", h.name.c_str());
+                h.fn(*this);
+            }
+        } else {  // record
+            std::vector<std::pair<uint64_t, unsigned char>> writes;
+            g_write_rec = &writes;
+            h.fn(*this);
+            g_write_rec = nullptr;
+            HostRec r{h.name, cpu_->regs[0], std::move(writes)};
+            hostrec_write(r);
+        }
+    } else {
+        h.fn(*this);
+    }
     if (cpu_->halted) return true;
     if (retry_hook_) {
         // The hook wants to be called again rather than return; leaving RIP where

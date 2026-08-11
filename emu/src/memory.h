@@ -26,6 +26,14 @@ extern bool g_watch_on;
 extern uint64_t g_watch_rip;
 extern uint64_t g_rwatch_addr;
 extern bool g_rwatch_on;
+
+// Host-oracle capture: when non-null, every guest byte a hook writes is appended
+// as (address, value).  Set around a host-backed hook (registry/WMI/HID/…) on a
+// real Windows run so its effect on guest memory can be recorded and later
+// replayed where no host exists (a WASM build).  Null in the common case, so the
+// only cost on the write path is one predictable branch.
+extern std::vector<std::pair<uint64_t, unsigned char>>* g_write_rec;
+
 void watch_init();
 void watch_report(uint64_t addr, uint64_t len, const void* bytes);
 void watch_report_read(uint64_t addr, uint64_t len);
@@ -145,6 +153,7 @@ public:
 
     void write8(uint64_t addr, uint8_t v) {
         if (g_watch_on && addr == g_watch_addr) watch_report(addr, 1, &v);
+        if (g_write_rec) g_write_rec->emplace_back(addr, v);
         *host_ptr(addr, true) = v;
     }
     void write16(uint64_t addr, uint16_t v) { write_int(addr, v); }
@@ -305,6 +314,9 @@ private:
     void write_int(uint64_t addr, T v) {
         if (g_watch_on && addr <= g_watch_addr && g_watch_addr < addr + sizeof(T))
             watch_report(addr, sizeof(T), &v);
+        if (g_write_rec)
+            for (unsigned i = 0; i < sizeof(T); ++i)
+                g_write_rec->emplace_back(addr + i, static_cast<unsigned char>(v >> (8 * i)));
         if ((addr & kPageMask) + sizeof(T) <= kPageSize) {
             std::memcpy(host_ptr(addr, true), &v, sizeof(T));
             return;

@@ -11,6 +11,7 @@ bool g_watch_on = false;
 uint64_t g_watch_rip = 0;
 uint64_t g_rwatch_addr = 0;
 bool g_rwatch_on = false;
+std::vector<std::pair<uint64_t, unsigned char>>* g_write_rec = nullptr;
 
 // Reads X86EMU_WATCH / X86EMU_RWATCH once, before main() runs.
 static const bool g_watch_initialized = [] {
@@ -145,6 +146,8 @@ void Memory::write(uint64_t addr, const void* src, uint64_t len) {
     const auto* in = static_cast<const uint8_t*>(src);
     if (g_watch_on && addr <= g_watch_addr && g_watch_addr < addr + len)
         watch_report(addr, len, in + (g_watch_addr - addr));
+    if (g_write_rec)
+        for (uint64_t i = 0; i < len; ++i) g_write_rec->emplace_back(addr + i, in[i]);
     while (len > 0) {
         uint64_t off = addr & kPageMask;
         uint64_t n = kPageSize - off;
