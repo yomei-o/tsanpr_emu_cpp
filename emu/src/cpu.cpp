@@ -1179,14 +1179,19 @@ std::string Cpu::profile_report() const {
         std::sort(tops.rbegin(), tops.rend());
         uint64_t base = mem_.regions().empty() ? 0 : 0x140000000ull;
         out += "[profile] --- hottest instruction addresses ---\n";
+        (void)base;
         for (size_t i = 0; i < tops.size() && i < 30; ++i) {
             uint64_t rip = tops[i].second;
+            const char* where = "?";
+            uint64_t rbase = 0;
+            for (const auto& r : regions)
+                if (rip >= r.base && rip < r.base + r.size) { where = r.name.c_str(); rbase = r.base; }
             std::snprintf(line, sizeof line,
-                          "[profile] %6.2f %%  %8llu  rip=%llx  dll+%llx\n",
+                          "[profile] %6.2f %%  %8llu  rip=%llx  %s+%llx\n",
                           100.0 * static_cast<double>(tops[i].first) / total,
                           static_cast<unsigned long long>(tops[i].first),
                           static_cast<unsigned long long>(rip),
-                          static_cast<unsigned long long>(rip - 0x140100000ull));
+                          where, static_cast<unsigned long long>(rip - rbase));
             out += line;
         }
     }
@@ -1289,6 +1294,38 @@ void Cpu::step() {
     uint64_t start = rip;
     g_watch_rip = start;
 
+    // EMU_GEMM: dump the register + stack arguments at the entry of the hot MLAS
+    // SGEMM micro-kernel (tsanpr.dll+0x21F2002) the first couple dozen times it
+    // runs, to reverse-engineer its ABI (A/B/C, K/M/N, strides) so the tile can be
+    // computed natively.  Its own cached flag (not the g_emu_diag gate) so enabling
+    // it does not reopen the whole per-instruction diagnostic block.
+    static const bool g_gemm_probe = [] {
+        bool b = std::getenv("EMU_GEMM") != nullptr;
+        if (b) std::fprintf(stderr, "[gemm] probe armed (watching tsanpr.dll 0x21F2xxx)\n");
+        return b;
+    }();
+    if (g_gemm_probe && start == 0x1422f2002ull) {
+        static int gemm_n = 0;
+        if (gemm_n++ < 24) {
+            uint64_t sp = regs[RSP];
+            std::fprintf(stderr,
+                "[gemm] #%d rva=%llx rcx=%llx rdx=%llx r8=%llx r9=%llx rdi=%llx rsi=%llx r10=%llx r11=%llx\n",
+                gemm_n, (unsigned long long)(start - 0x140100000ull),
+                (unsigned long long)regs[RCX], (unsigned long long)regs[RDX],
+                (unsigned long long)regs[8], (unsigned long long)regs[9],
+                (unsigned long long)regs[RDI], (unsigned long long)regs[RSI],
+                (unsigned long long)regs[10], (unsigned long long)regs[11]);
+            std::fprintf(stderr, "[gemm]   sp=%llx stk", (unsigned long long)sp);
+            const uint64_t offs[] = {0xf8, 0x138, 0x140, 0x148, 0x150, 0x160, 0x168, 0x170};
+            for (uint64_t o : offs) {
+                uint64_t v = 0;
+                try { v = mem_.read64(sp + o); } catch (...) {}
+                std::fprintf(stderr, " [+%llx]=%llx", (unsigned long long)o, (unsigned long long)v);
+            }
+            std::fprintf(stderr, "\n");
+        }
+    }
+
     // Every EMU_*/env-gated diagnostic below is off in an ordinary run.  Each was
     // calling std::getenv PER env var PER instruction just to establish that —
     // ruinous for a long run (model inference is billions of instructions).  Cache
@@ -1350,10 +1387,6 @@ void Cpu::step() {
     // can tell whether the empty gate-2 token is size==0 with data=="1" (an SSO
     // size bug) or a genuinely empty buffer.  Also logs the caller (return addr).
     // EMU_STOIOBJ: at the wcstol call inside stoi (RVA 0x14ED076), rbx is the
-    // token c_str(); for an SSO std::wstring that is the object base, so size is
-    // at rbx+0x10 and cap at rbx+0x18.  Log both to tell an SSO size==0 bug
-    // (data present, size 0) from a genuinely empty buffer.  Guarded so a bad
-    // read can't abort the run.
     if (std::getenv("EMU_STOIOBJ") && start == 0x1415ed076ull) {
         uint64_t ret = mem_.read64(regs[RSP]);
         uint64_t obj = regs[RBX];
