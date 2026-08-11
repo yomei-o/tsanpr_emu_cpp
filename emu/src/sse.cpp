@@ -187,11 +187,16 @@ bool Cpu::execute_sse(uint8_t op) {
     // Applies a binary operation to a packed or scalar float operand pair.
     // `lanes` is how many elements take part; the rest of the destination is
     // left alone, which is exactly the scalar (SS/SD) behaviour.
-    auto pd_op = [&](Xmm& dst, const Xmm& src, int lanes, double (*fn)(double, double)) {
+    // `fn` is taken as a generic functor, not a `double(*)(double,double)`
+    // pointer: passing a lambda through a function pointer forced an indirect,
+    // un-inlinable call PER LANE, which dominated float-heavy guest code (ONNX
+    // matmul/conv is millions of these).  As a template parameter the lambda
+    // inlines and the small lane loop vectorises.
+    auto pd_op = [&](Xmm& dst, const Xmm& src, int lanes, auto fn) {
         for (int i = 0; i < lanes; ++i)
             dst.f64[i] = fn(dst.f64[i], src.f64[i]);
     };
-    auto ps_op = [&](Xmm& dst, const Xmm& src, int lanes, float (*fn)(float, float)) {
+    auto ps_op = [&](Xmm& dst, const Xmm& src, int lanes, auto fn) {
         for (int i = 0; i < lanes; ++i)
             dst.f32[i] = fn(dst.f32[i], src.f32[i]);
     };

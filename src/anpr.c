@@ -314,6 +314,10 @@ int readLicensePlates(const char *countryCode)
 
 int main(int ac, char **av)
 {
+    // Stream results as each image finishes instead of buffering them all until
+    // exit — under the emulator a single recognition takes minutes, so line-by-
+    // line output is what makes progress visible.
+    setvbuf(stdout, NULL, _IONBF, 0);
     const char *engineFileName = getEngineFileName();
     int res = 0;
 #ifdef _WIN32

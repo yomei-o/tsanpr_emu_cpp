@@ -27,6 +27,19 @@ if(WIN32)
     target_link_libraries(x86emu PRIVATE ole32 oleaut32 wbemuuid iphlpapi setupapi hid)
 endif()
 
+# The interpreter is the whole cost of running a guest, and running ONNX
+# inference under it is billions of instructions — so optimise x86emu itself
+# aggressively.  /arch:AVX2 lets the compiler use the host's wide registers for
+# the SSE-emulation lane loops, /Ob3 + whole-program (/GL,/LTCG) inline the hot
+# dispatch across translation units.  Nothing here changes what the emulator
+# computes for the guest, only how fast it does it.
+if(MSVC)
+    target_compile_options(x86emu PRIVATE $<$<CONFIG:Release>:/O2 /Ob3 /Oi /Ot /arch:AVX2 /GL /Gy>)
+    target_link_options(x86emu PRIVATE $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>)
+else()
+    target_compile_options(x86emu PRIVATE -O3 -march=native)
+endif()
+
 # Both go next to engine/ and img/ regardless of build configuration, because
 # anpr resolves those paths relative to its own location.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
