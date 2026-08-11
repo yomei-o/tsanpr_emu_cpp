@@ -83,6 +83,9 @@ bool is_host_oracle(const std::string& n) {
 struct HostRec {
     std::string name;
     uint64_t rax = 0;
+    uint64_t misc_next = 0;  // allocation cursors after the hook ran, so the
+    uint64_t heap_next = 0;  // replay's later, non-replayed allocations land
+    uint64_t mmap_next = 0;  // exactly where the recording's did
     std::vector<std::pair<uint64_t, unsigned char>> writes;
 };
 std::FILE* g_hostrec_file = nullptr;          // record: append here
@@ -95,6 +98,9 @@ void hostrec_write(const HostRec& r) {
     std::fwrite(&nl, 4, 1, g_hostrec_file);
     std::fwrite(r.name.data(), 1, nl, g_hostrec_file);
     std::fwrite(&r.rax, 8, 1, g_hostrec_file);
+    std::fwrite(&r.misc_next, 8, 1, g_hostrec_file);
+    std::fwrite(&r.heap_next, 8, 1, g_hostrec_file);
+    std::fwrite(&r.mmap_next, 8, 1, g_hostrec_file);
     uint32_t nw = static_cast<uint32_t>(r.writes.size());
     std::fwrite(&nw, 4, 1, g_hostrec_file);
     for (auto& w : r.writes) {
@@ -114,6 +120,9 @@ bool hostrep_load(const char* path) {
         r.name.resize(nl);
         if (nl && std::fread(&r.name[0], 1, nl, f) != nl) break;
         if (std::fread(&r.rax, 8, 1, f) != 1) break;
+        if (std::fread(&r.misc_next, 8, 1, f) != 1) break;
+        if (std::fread(&r.heap_next, 8, 1, f) != 1) break;
+        if (std::fread(&r.mmap_next, 8, 1, f) != 1) break;
         uint32_t nw = 0;
         if (std::fread(&nw, 4, 1, f) != 1) break;
         r.writes.resize(nw);
@@ -414,6 +423,14 @@ bool Emulator::dispatch_hook(uint64_t addr) {
                     mem.write8(w.first, w.second);
                 }
                 set_result(r.rax);
+                // The skipped hook advanced the allocation cursors on Windows;
+                // move them to the same place so later, non-replayed allocations
+                // (e.g. an object a non-recorded CoCreateInstance builds) land
+                // where they did on the recording run instead of colliding with
+                // the bytes just written.
+                if (r.misc_next > misc_next_) misc_next_ = r.misc_next;
+                if (r.heap_next > heap_next_) heap_next_ = r.heap_next;
+                if (r.mmap_next > mmap_next_) mmap_next_ = r.mmap_next;
             } else {
                 std::fprintf(stderr, "[hostrep] out of records at '%s'\n", h.name.c_str());
                 h.fn(*this);
@@ -423,7 +440,7 @@ bool Emulator::dispatch_hook(uint64_t addr) {
             g_write_rec = &writes;
             h.fn(*this);
             g_write_rec = nullptr;
-            HostRec r{h.name, cpu_->regs[0], std::move(writes)};
+            HostRec r{h.name, cpu_->regs[0], misc_next_, heap_next_, mmap_next_, std::move(writes)};
             hostrec_write(r);
         }
     } else {
