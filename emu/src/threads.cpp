@@ -724,7 +724,23 @@ void Emulator::install_thread_hooks() {
     });
     win32("WakeConditionVariable", 1, [](Emulator& e) { e.set_result(0); });
     win32("WakeAllConditionVariable", 1, [](Emulator& e) { e.set_result(0); });
-    win32("InterlockedFlushSList", 1, [](Emulator& e) { e.set_result(0); });
+    // Return the whole chain (the current head) and empty the list, matching the
+    // x64 packed SLIST_HEADER (head = NextEntry<<4 at offset 8).
+    win32("InterlockedFlushSList", 1, [](Emulator& e) {
+        uint64_t head = e.arg_slot(0);
+        if (!head) { e.set_result(0); return; }
+        if (e.pointer_size() == 8) {
+            uint64_t region = e.mem.read_sized(head + 8, 8);
+            uint64_t first = (region >> 4) << 4;
+            e.mem.write_sized(head, 8, e.mem.read_sized(head, 8) & ~0xFFFFULL);  // Depth = 0
+            e.mem.write_sized(head + 8, 8, region & 0xF);                        // NextEntry = 0
+            e.set_result(first);
+        } else {
+            uint64_t first = e.mem.read_sized(head, 4);
+            e.mem.write_sized(head, 4, 0);
+            e.set_result(first);
+        }
+    });
     win32("CreateWaitableTimerExW", 4, [](Emulator& e) {
         e.set_result(e.create_sync_object(SyncObject::Kind::Event, true, false, 0));
     });

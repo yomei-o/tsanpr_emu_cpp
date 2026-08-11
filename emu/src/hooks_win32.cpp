@@ -463,7 +463,17 @@ void Emulator::install_win32_hooks() {
     win32("DecodePointer", 1, [](Emulator& e) { e.set_result(e.arg_slot(0)); });
     win32("EncodeSystemPointer", 1, [](Emulator& e) { e.set_result(e.arg_slot(0)); });
     win32("DecodeSystemPointer", 1, [](Emulator& e) { e.set_result(e.arg_slot(0)); });
-    ret0("InitializeSListHead", 1);
+    // Zero the SLIST_HEADER so Depth/Sequence/NextEntry all start at 0.  The old
+    // no-op left the guest's freshly-allocated header holding stack/heap garbage,
+    // which InterlockedPop* then dereferenced.  16 bytes on x64, one word on x86.
+    win32("InitializeSListHead", 1, [](Emulator& e) {
+        uint64_t head = e.arg_slot(0);
+        if (head) {
+            e.mem.write_sized(head, 8, 0);
+            if (e.pointer_size() == 8) e.mem.write_sized(head + 8, 8, 0);
+        }
+        e.set_result(0);
+    });
     ret0("SetUnhandledExceptionFilter", 1);
     ret1("UnhandledExceptionFilter", 1);  // EXCEPTION_EXECUTE_HANDLER
     ret1("SetConsoleCtrlHandler", 2);

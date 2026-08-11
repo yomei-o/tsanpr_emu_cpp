@@ -222,6 +222,11 @@ int main(int argc, char** argv) {
         // Saying what the address is turns "unmapped read" into an explanation.
         std::string what = emu.describe_address(err.addr);
         if (!what.empty()) std::fprintf(stderr, "  %s\n", what.c_str());
+        // When the fault happens while rip is a hook trampoline, the emulator is
+        // inside that API's host implementation — naming it points straight at the
+        // hook that read the bad address.
+        std::string ripwhat = emu.describe_address(emu.cpu().rip);
+        if (!ripwhat.empty()) std::fprintf(stderr, "  rip: %s\n", ripwhat.c_str());
         std::fprintf(stderr, "  %s\n", emu.cpu().state_line().c_str());
         std::string trace = emu.stack_trace();
         if (!trace.empty()) std::fprintf(stderr, "  possible callers:\n%s", trace.c_str());

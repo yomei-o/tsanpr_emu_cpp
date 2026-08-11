@@ -268,24 +268,52 @@ void Emulator::install_link_hooks() {
         e.exit_process(0xC0000409);  // STATUS_STACK_BUFFER_OVERRUN, what WER logs
     });
 
-    // Interlocked singly-linked lists.  The header is a guest-owned structure
-    // whose first pointer-sized word is the head of the chain, and each entry's
-    // first word is its next pointer; nothing else in it matters to a
-    // single-threaded interpreter, and the guest allocates and aligns the memory.
+    // Interlocked singly-linked lists.  Each entry's first word is its next
+    // pointer, but the HEADER is not simply "head at offset 0": on x64 the guest
+    // uses the real 16-byte SLIST_HEADER, where offset 0 is {Depth:16,
+    // Sequence:48} and offset 8 is {Reserved:4, NextEntry:60} with the list head
+    // stored as pointer>>4 (entries are 16-byte aligned).  The guest reads and
+    // writes that packed layout inline, so the hooks MUST match it — reading
+    // offset 0 as the head made Pop treat the Depth value (e.g. 0x30) as a
+    // pointer and crash.  On x86 the header is one pointer-sized word at offset 0.
     win32("InterlockedPushEntrySList", 2, [](Emulator& e) {
         uint64_t head = e.arg_slot(0), entry = e.arg_slot(1);
-        int ps = e.pointer_size();
-        uint64_t first = e.mem.read_sized(head, ps);
-        e.mem.write_sized(entry, ps, first);
-        e.mem.write_sized(head, ps, entry);
-        e.set_result(first);
+        if (e.pointer_size() == 8) {
+            uint64_t w0 = e.mem.read_sized(head, 8);
+            uint64_t region = e.mem.read_sized(head + 8, 8);
+            uint64_t oldfirst = (region >> 4) << 4;      // NextEntry << 4
+            e.mem.write_sized(entry, 8, oldfirst);       // entry->Next = old head
+            uint64_t depth = (w0 & 0xFFFF) + 1;
+            uint64_t seq = (w0 >> 16) + 1;
+            e.mem.write_sized(head, 8, (seq << 16) | (depth & 0xFFFF));
+            e.mem.write_sized(head + 8, 8, (entry & ~0xFULL) | (region & 0xF));
+            e.set_result(oldfirst);
+        } else {
+            uint64_t first = e.mem.read_sized(head, 4);
+            e.mem.write_sized(entry, 4, first);
+            e.mem.write_sized(head, 4, entry);
+            e.set_result(first);
+        }
     });
     win32("InterlockedPopEntrySList", 1, [](Emulator& e) {
         uint64_t head = e.arg_slot(0);
-        int ps = e.pointer_size();
-        uint64_t first = e.mem.read_sized(head, ps);
-        if (first) e.mem.write_sized(head, ps, e.mem.read_sized(first, ps));
-        e.set_result(first);
+        if (e.pointer_size() == 8) {
+            uint64_t w0 = e.mem.read_sized(head, 8);
+            uint64_t region = e.mem.read_sized(head + 8, 8);
+            uint64_t first = (region >> 4) << 4;         // NextEntry << 4
+            if (!first) { e.set_result(0); return; }
+            uint64_t next = e.mem.read_sized(first, 8);  // first->Next
+            uint64_t depth = w0 & 0xFFFF;
+            if (depth) --depth;
+            uint64_t seq = w0 >> 16;
+            e.mem.write_sized(head, 8, (seq << 16) | (depth & 0xFFFF));
+            e.mem.write_sized(head + 8, 8, (next & ~0xFULL) | (region & 0xF));
+            e.set_result(first);
+        } else {
+            uint64_t first = e.mem.read_sized(head, 4);
+            if (first) e.mem.write_sized(head, 4, e.mem.read_sized(first, 4));
+            e.set_result(first);
+        }
     });
 
     // ---- oleaut32: BSTR and VARIANT -----------------------------------------

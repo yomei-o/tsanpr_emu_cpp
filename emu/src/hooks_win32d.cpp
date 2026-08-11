@@ -213,7 +213,12 @@ void Emulator::install_win32_dll_hooks() {
         if (e.arg_slot(4)) e.mem.write_sized(e.arg_slot(4), e.pointer_size(), 4);
         e.set_result(1);
     });
-    ret0("QueryDepthSList", 1);
+    // Depth lives in the low 16 bits of the header's first word (both x86 and the
+    // x64 HeaderX64 layout put Depth there).
+    win32("QueryDepthSList", 1, [](Emulator& e) {
+        uint64_t head = e.arg_slot(0);
+        e.set_result(head ? (e.mem.read_sized(head, 8) & 0xFFFF) : 0);
+    });
 
     // ---- system directories -------------------------------------------------
     // Bridged to the host so the CASE matches the real machine: Windows returns
