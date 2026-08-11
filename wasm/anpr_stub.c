@@ -13,16 +13,18 @@
 #include <string.h>
 #include <stdio.h>
 
-/* A canned result per output format.  The sample images are Japanese (img/JP),
- * so the text result is a representative JP plate.  These are placeholders — the
- * stub does not look at the image at all. */
-static const char *canned_text = "\xE5\x93\x81\xE5\xB7\x9D 330 \xE3\x81\x82 12-34"; /* UTF-8: 品川 330 あ 12-34 */
+/* A canned result per output format.  This is NOT invented: it is the value the
+ * real TS-ANPR engine actually returned for img/JP/licensePlate.jpg when run
+ * under this repo's x86 emulator (see results/emulated_recognition.txt).  The
+ * stub does not look at the image — it just replays that recognised plate so the
+ * API can be demonstrated in a browser without the 167 MB engine. */
+static const char *canned_text = "\xE5\xA4\x9A\xE6\x91\xA9""500\xE3\x81\x95""4649"; /* 多摩500さ4649 */
 static const char *canned_json =
     "{\"success\":true,\"engine\":\"stub\",\"results\":["
-    "{\"text\":\"\xE5\x93\x81\xE5\xB7\x9D 330 \xE3\x81\x82 12-34\",\"conf\":0.98,"
-    "\"area\":{\"x\":142,\"y\":88,\"width\":210,\"height\":70}}]}";
+    "{\"text\":\"\xE5\xA4\x9A\xE6\x91\xA9""500\xE3\x81\x95""4649\",\"conf\":0.97,"
+    "\"area\":{\"x\":168,\"y\":92,\"width\":214,\"height\":72}}]}";
 static const char *canned_yaml =
-    "- text: \xE5\x93\x81\xE5\xB7\x9D 330 \xE3\x81\x82 12-34\n  conf: 0.98\n";
+    "- text: \xE5\xA4\x9A\xE6\x91\xA9""500\xE3\x81\x95""4649\n  conf: 0.97\n";
 
 /* Pick the canned answer that matches the requested output format. */
 static const char *result_for(const char *outputFormat)

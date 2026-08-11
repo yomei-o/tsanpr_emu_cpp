@@ -1,0 +1,18 @@
+C:\prog\claude\tsanpr_emu_cpp/img/JP/licensePlate.jpg (outputFormat="text", options="") => 多摩500さ4649
+C:\prog\claude\tsanpr_emu_cpp/img/JP/multiple.jpg (outputFormat="text", options="vm") => 品川302な1234
+品川257め7890
+練馬500く5678
+多摩585ひ9012
+足立460み3456
+C:\prog\claude\tsanpr_emu_cpp/img/JP/multiple.jpg (outputFormat="text", options="vmb") => 品川302な1234
+品川257め7890
+練馬500く5678
+多摩585ひ9012
+足立460み3456
+C:\prog\claude\tsanpr_emu_cpp/img/JP/surround.jpg (outputFormat="text", options="vms") => 品川580こ7861
+帯広230あ235
+京都400そ4720
+神戸552さ27
+函館331ぬ105
+越谷300ち7985
+C:\prog\claude\tsanpr_emu_cpp/img/JP/surround.jpg (outputFormat="text", options="dms") => 

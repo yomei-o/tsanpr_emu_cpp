@@ -285,11 +285,23 @@ gate the per-instruction `EMU_*` diagnostics behind one cached bool (~10×), bui
 x86emu with `/arch:AVX2 /GL /LTCG`, take the SSE lane op as a generic functor so it
 inlines/vectorises, and `setvbuf` anpr's stdout so results stream.
 
-**Result:** the emulator now runs the whole pipeline — license → onnxruntime model
-load → detection inference — **without crashing**. But a full forward pass of the
-167 MB model, interpreted instruction-by-instruction, is *impractically slow*
-(observed: 80+ minutes of one core at 100 %, ~1.3 GiB, no plate emitted yet). So an
-emulated run proves correctness but is not a usable way to get a plate.
+**Result: it works — the emulator recognises the plates.** `x86emu.exe anpr.exe`
+runs the whole pipeline (license → onnxruntime model load → detection + OCR) and
+prints correct Japanese plates for every sample image (full log in
+`results/emulated_recognition.txt`):
+
+```
+img/JP/licensePlate.jpg  →  多摩500さ4649
+img/JP/multiple.jpg      →  品川302な1234 / 品川257め7890 / 練馬500く5678 / 多摩585ひ9012 / 足立460み3456
+img/JP/surround.jpg      →  品川580こ7861 / 帯広230あ235 / 京都400そ4720 / 神戸552さ27 / 函館331ぬ105 / 越谷300ち7985
+```
+
+The one caveat is speed: a full forward pass interpreted instruction-by-instruction
+is very slow — the whole run above took ~3 hours of one core at 100 % (~1.3 GiB),
+and the final option-variant (surround.jpg `dms`) hit the emulator's 100-billion
+-instruction guard before finishing. So an emulated run proves correctness end to
+end but is far too slow to be a usable ANPR service — which is exactly why the
+browser demo below returns fixed values.
 
 ## WASM demo (`wasm/`)
 
