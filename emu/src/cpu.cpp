@@ -1549,6 +1549,24 @@ void Cpu::step() {
         }
     }
 
+    // Int-array zero-fill leaf (0x1E04ED0): `for(i=0;i<r9;++i) ((int*)rdx)[i]=0;`
+    // done one int at a time through a jmp loop — the top LOAD hot spot (~10% of
+    // model-load samples, called all over the ONNX graph build).  Replace with a
+    // native fill and return.  Deterministic + bounded, so safe.  EMU_ZERO_HOOK=1.
+    static const bool g_zero_hook = std::getenv("EMU_ZERO_HOOK") != nullptr;
+    if (g_zero_hook && start == 0x141f04ed0ull) {
+        uint64_t sp = regs[RSP], base = regs[RDX], n = regs[9];
+        if (n <= 0x8000000ull) {                          // <=128M ints, sane
+            try {
+                for (uint64_t i = 0; i < n; ++i) mem_.write32(base + i * 4, 0);
+                rip = mem_.read64(sp); regs[RSP] = sp + 8; ++instructions_executed;
+                static uint64_t zc = 0; if (((++zc) & 0x3ffff) == 1)
+                    std::fprintf(stderr, "[zerohook] calls=%llu\n", (unsigned long long)zc);
+                return;
+            } catch (...) {}
+        }
+    }
+
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(__wasm__) && !defined(__EMSCRIPTEN__)
     // AES-CBC decrypt native hook — the model-load bottleneck.  Function entry
     // 0x135A310 (emu 0x14145A310): crypt(src=rcx, dst=rdx, len=r8, key=r9,
