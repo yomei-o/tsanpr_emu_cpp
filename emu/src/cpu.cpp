@@ -1165,6 +1165,31 @@ std::string Cpu::profile_report() const {
                       static_cast<unsigned long long>(n), name.c_str());
         out += line;
     }
+
+    // Also bucket the raw samples by individual instruction address so a hot
+    // inner loop (e.g. a GEMM micro-kernel) shows up as a handful of addresses.
+    // Reported as dll+RVA when the sample lands in the loaded image so it can be
+    // disassembled and hooked out to a native implementation.
+    {
+        std::unordered_map<uint64_t, uint64_t> byrip;
+        for (uint64_t rip : profile_samples_) ++byrip[rip];
+        std::vector<std::pair<uint64_t, uint64_t>> tops;  // (count, rip)
+        tops.reserve(byrip.size());
+        for (const auto& [rip, n] : byrip) tops.push_back({n, rip});
+        std::sort(tops.rbegin(), tops.rend());
+        uint64_t base = mem_.regions().empty() ? 0 : 0x140000000ull;
+        out += "[profile] --- hottest instruction addresses ---\n";
+        for (size_t i = 0; i < tops.size() && i < 30; ++i) {
+            uint64_t rip = tops[i].second;
+            std::snprintf(line, sizeof line,
+                          "[profile] %6.2f %%  %8llu  rip=%llx  dll+%llx\n",
+                          100.0 * static_cast<double>(tops[i].first) / total,
+                          static_cast<unsigned long long>(tops[i].first),
+                          static_cast<unsigned long long>(rip),
+                          static_cast<unsigned long long>(rip - 0x140100000ull));
+            out += line;
+        }
+    }
     return out;
 }
 

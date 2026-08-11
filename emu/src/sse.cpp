@@ -14,6 +14,15 @@
 #include <cstdlib>
 #include <cstring>
 
+// On a real x86 host the AES-NI and CLMUL instructions the guest uses to decrypt
+// its model can run on the host's own hardware instead of the byte-at-a-time
+// software emulation below — bit-identical (both are FIPS-197) and vastly faster.
+// Not available under WebAssembly, which keeps the software path.
+#if (defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)) && !defined(__wasm__) && !defined(__EMSCRIPTEN__)
+#define X86EMU_HOST_AESNI 1
+#include <wmmintrin.h>
+#endif
+
 #include "cpu.h"
 
 namespace x86emu {
@@ -1189,6 +1198,21 @@ bool Cpu::execute_sse(uint8_t op) {
             if (sel == Sel::P66 && op3 >= 0xDB && op3 <= 0xDF) {
                 RM rm = decode_modrm();
                 Xmm s = xmm_read(rm), d = xmm[modrm_reg_], r{};
+#if defined(X86EMU_HOST_AESNI)
+                // Run the round on the host's AES-NI unit.  Same FIPS-197 result,
+                // orders of magnitude faster than the S-box/GF byte loop.
+                __m128i md = _mm_loadu_si128(reinterpret_cast<const __m128i*>(d.b));
+                __m128i ms = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s.b));
+                __m128i mr;
+                switch (op3) {
+                    case 0xDB: mr = _mm_aesimc_si128(ms);          ++g_aes.imc;     break;
+                    case 0xDC: mr = _mm_aesenc_si128(md, ms);      ++g_aes.enc;     break;
+                    case 0xDD: mr = _mm_aesenclast_si128(md, ms);  ++g_aes.enclast; break;
+                    case 0xDE: mr = _mm_aesdec_si128(md, ms);      ++g_aes.dec;     break;
+                    default:   mr = _mm_aesdeclast_si128(md, ms);  ++g_aes.declast; break;
+                }
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(r.b), mr);
+#else
                 switch (op3) {
                     case 0xDB:  // AESIMC: the equivalent-inverse key schedule
                         r = aes_inv_mix_columns(s);
@@ -1211,6 +1235,7 @@ bool Cpu::execute_sse(uint8_t op) {
                         ++g_aes.declast;
                         break;
                 }
+#endif
                 xmm[modrm_reg_] = r;
                 return true;
             }
@@ -1583,18 +1608,41 @@ bool Cpu::execute_sse(uint8_t op) {
                 RM rm = decode_modrm(1);
                 Xmm s = xmm_read(rm);
                 uint8_t rcon = fetch8();
+                Xmm r{};
+#if defined(X86EMU_HOST_AESNI)
+                __m128i ms = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s.b));
+                // rcon is an immediate to the intrinsic; dispatch the ones a key
+                // schedule actually uses, else fall through to the byte version.
+                __m128i mr;
+                switch (rcon) {
+                    case 0x00: mr = _mm_aeskeygenassist_si128(ms, 0x00); break;
+                    case 0x01: mr = _mm_aeskeygenassist_si128(ms, 0x01); break;
+                    case 0x02: mr = _mm_aeskeygenassist_si128(ms, 0x02); break;
+                    case 0x04: mr = _mm_aeskeygenassist_si128(ms, 0x04); break;
+                    case 0x08: mr = _mm_aeskeygenassist_si128(ms, 0x08); break;
+                    case 0x10: mr = _mm_aeskeygenassist_si128(ms, 0x10); break;
+                    case 0x20: mr = _mm_aeskeygenassist_si128(ms, 0x20); break;
+                    case 0x40: mr = _mm_aeskeygenassist_si128(ms, 0x40); break;
+                    case 0x80: mr = _mm_aeskeygenassist_si128(ms, 0x80); break;
+                    case 0x1B: mr = _mm_aeskeygenassist_si128(ms, 0x1B); break;
+                    case 0x36: mr = _mm_aeskeygenassist_si128(ms, 0x36); break;
+                    default:   mr = _mm_aeskeygenassist_si128(ms, 0x00);
+                               mr = _mm_xor_si128(mr, _mm_set_epi32(rcon, 0, rcon, 0)); break;
+                }
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(r.b), mr);
+#else
                 auto sub_word = [](uint32_t w) {
-                    uint32_t r = 0;
+                    uint32_t rr = 0;
                     for (int i = 0; i < 4; ++i)
-                        r |= static_cast<uint32_t>(kAesSbox[(w >> (i * 8)) & 0xFF]) << (i * 8);
-                    return r;
+                        rr |= static_cast<uint32_t>(kAesSbox[(w >> (i * 8)) & 0xFF]) << (i * 8);
+                    return rr;
                 };
                 auto rot_word = [](uint32_t w) { return (w >> 8) | (w << 24); };
-                Xmm r{};
                 r.d[0] = sub_word(s.d[1]);
                 r.d[1] = rot_word(sub_word(s.d[1])) ^ rcon;
                 r.d[2] = sub_word(s.d[3]);
                 r.d[3] = rot_word(sub_word(s.d[3])) ^ rcon;
+#endif
                 ++g_aes.keygen;
                 xmm[modrm_reg_] = r;
                 return true;
