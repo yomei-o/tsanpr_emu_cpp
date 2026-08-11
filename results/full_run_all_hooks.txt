@@ -1,0 +1,21 @@
+# Full anpr run with ALL native hooks (EMU_AES_SKIP + EMU_GEMM_SKIP + EMU_ZERO_HOOK) — 2026-08-12
+# COMPLETED CLEANLY (EXIT=0). The fully-emulated run previously hit the 100-billion-instruction
+# guard on the surround.jpg 'dms' variant and never finished; with the hooks the whole run
+# finishes and every plate matches the known-good result.
+
+## simple-text plates:
+品川257め7890
+品川302な1234
+品川580こ7861
+多摩500さ4649
+多摩585ひ9012
+練馬500く5678
+足立460み3456
+
+## detailed-format plates (surround.jpg etc., car,...,PLATE,...):
+京都400そ4720
+函館331ぬ105
+品川580こ7861
+帯広230あ235
+神戸552さ27
+越谷300ち7985
