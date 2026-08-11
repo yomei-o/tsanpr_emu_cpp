@@ -1,0 +1,17 @@
+[graw] A=17c831760 B=17a89e1a0 C=17ce71780 r9=64 rbp=32 r15=10144 r13(-s148)=-6383933312 r13dec(s158)=10240 r14(s150)=10240 r11=2 r12=3 rsi=4608 ldc=204800 flags=0
+[gtraj] #0 rcx=17c831760 r8=17ce71780 rdx=17a89e1a0 r9=40 r10=a0
+[gtraj] #1 rcx=17a63f320 r8=17ce717a0 rdx=0 r9=40 r10=9f
+[gtraj] #2 rcx=17a63f320 r8=17ce717c0 rdx=0 r9=40 r10=9e
+[gtraj] #3 rcx=17a63f320 r8=17ce717e0 rdx=0 r9=40 r10=9d
+[gtraj] #4 rcx=17a63f320 r8=17ce71800 rdx=0 r9=40 r10=9c
+[gtraj] #5 rcx=17a63f320 r8=17ce71820 rdx=0 r9=40 r10=9b
+[gtraj] #6 rcx=17a63f320 r8=17ce71840 rdx=0 r9=40 r10=9a
+[gtraj] #7 rcx=17a63f320 r8=17ce71860 rdx=0 r9=40 r10=99
+[gtraj] #8 rcx=17a63f320 r8=17ce71880 rdx=0 r9=40 r10=98
+[gtraj] #9 rcx=17a63f320 r8=17ce718a0 rdx=0 r9=40 r10=97
+[gtraj] #10 rcx=17c8f6f60 r8=17cea3780 rdx=17a89dea0 r9=40 r10=a0
+[gtraj] #11 rcx=17a63f320 r8=17cea37a0 rdx=0 r9=40 r10=9f
+[gtraj] #12 rcx=17a63f320 r8=17cea37c0 rdx=0 r9=40 r10=9e
+[gtraj] #13 rcx=17a63f320 r8=17cea37e0 rdx=0 r9=40 r10=9d
+[gtraj] #14 rcx=17a63f320 r8=17cea3800 rdx=0 r9=40 r10=9c
+[gtraj] #15 rcx=17a63f320 r8=17cea3820 rdx=0 r9=40 r10=9b

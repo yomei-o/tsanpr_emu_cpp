@@ -1346,73 +1346,116 @@ void Cpu::step() {
         //     rcx += r15(=[rsp+0x120]);  r13 -= [rsp+0x158]
         //   store: flags=[rsp+0x180]: bit0 += C_cur, bit1 += bias[rsp+0x178], bit2 relu
         struct Pend {
-            uint64_t A,B,C,rsi,ldc,rbp,r15,r13,r13dec,r14,r11,r12,bias; int flags;
-            std::vector<float> cinit; bool live=false;
+            uint64_t A,B,C,rsi,ldc,rbp,r15,r13,r13dec,r14,r11,r12,r9,r10,bias; int flags;
+            uint64_t CountM,s118,s138,s160,s168,s170;
+            std::vector<float> pred;
+            bool live=false;
         };
         static Pend p;
         static int vn = 0;
         uint64_t sp = regs[RSP];
-        uint64_t N = 0, M = 0;
+        uint64_t N = 0, M = 0, CountM = regs[11];             // r11 = CountM at the cmp
         try { N = mem_.read64(sp + 0x168); M = mem_.read64(sp + 0x138); } catch (...) {}
 
-        if (p.live && vn < 4) {
-            uint64_t rsi = p.rsi, ldc_f = p.ldc;
-            double Cacc[3][8]; for (int m=0;m<3;++m) for(int j=0;j<8;++j) Cacc[m][j]=0.0;
-            uint64_t rcx=p.A, rdx=p.B; int64_t r13=(int64_t)p.r13;
-            for (uint64_t mb=0; mb<p.r11; ++mb) {
-                for (uint64_t it=0; it<p.r12; ++it) {
-                    bool skip = ((uint64_t)(rcx + (uint64_t)r13) >= p.r14);
-                    if (!skip) {
-                        for (int s=0;s<8;++s) {
-                            float a = rdf(rcx + (uint64_t)s*4);
-                            for (int m=0;m<3;++m)
-                                for (int j=0;j<8;++j) {
-                                    float b = rdf(rdx + m*rsi + (uint64_t)s*0x20 - 0x80 + (uint64_t)j*4);
-                                    Cacc[m][j] += (double)a*b;
-                                }
-                        }
-                    }
-                    rcx += p.rbp; rdx += 0x100;
+        // FULL-FUNCTION verify.  KEY: compute the prediction at STASH time (kernel
+        // ENTRY, A/B still fresh) — reading A at verify time is unreliable because the
+        // activation buffer gets overwritten between the kernel running and the next
+        // entry (that was the panel-9 "drift").  At the next entry, C is written, so
+        // compare the stored prediction to real C.
+        if (p.live && !p.pred.empty() && vn < 4) {
+            uint64_t ldc_f = p.ldc, r10 = p.r10;
+            int MR = (int)p.CountM; if (MR<1) MR=1; if (MR>8) MR=8;
+            double emax=0; int bad_panels=0; long first_bad=-1;
+            for (uint64_t panel=0; panel<r10; ++panel) {
+                double pmax=0;
+                for (int m=0;m<MR;++m) for (int j=0;j<8;++j) {
+                    double v = p.pred[(panel*8 + (uint64_t)m)*8 + j];  // stored prediction
+                    double real = rdf(p.C + ((uint64_t)m*ldc_f + panel*8 + j)*4);
+                    pmax = std::max(pmax, std::fabs(real - v));
                 }
-                rcx += p.r15; r13 -= (int64_t)p.r13dec;
+                if (pmax > 0.01) { ++bad_panels; if (first_bad<0) first_bad=(long)panel; }
+                emax = std::max(emax, pmax);
             }
-            // store: replay flags (bit0 add current C, bit2 relu; bias bit1 skipped)
-            auto Cval = [&](int m,int j){ return rdf(p.C + ((uint64_t)m*ldc_f + j)*4); };
-            double emax=0, emax_norelu=0;
-            for (int m=0;m<3;++m) for (int j=0;j<8;++j) {
-                double v = Cacc[m][j];
-                if (p.flags & 1) v += p.cinit[m*8+j];            // bit0 accumulate onto C
-                double vn0 = v;
-                if (p.flags & 4) v = v<0?0:v;                    // bit2 ReLU
-                emax = std::max(emax, std::fabs(Cval(m,j)-v));
-                emax_norelu = std::max(emax_norelu, std::fabs(Cval(m,j)-vn0));
+            std::fprintf(stderr,"[gfull] #%d CountM=%llu r10=%llu flags=%d full_err=%.5g bad=%d/%llu first_bad=%ld\n",
+                         ++vn,(unsigned long long)p.CountM,(unsigned long long)r10,p.flags,emax,
+                         bad_panels,(unsigned long long)r10,first_bad);
+            if (first_bad>=0 && first_bad>=1) {               // dump the boundary
+                long fb=first_bad;
+                for (long pp=fb-1; pp<=fb+1 && (uint64_t)pp<r10; ++pp) {
+                    char buf[300]; int o=0;
+                    o+=std::snprintf(buf+o,sizeof buf-o,"[gdiff] panel=%ld pred[0..3]=",pp);
+                    for(int j=0;j<4;++j) o+=std::snprintf(buf+o,sizeof buf-o,"%.3f ",p.pred[((uint64_t)pp*8+0)*8+j]);
+                    o+=std::snprintf(buf+o,sizeof buf-o,"| real[0..3]=");
+                    for(int j=0;j<4;++j) o+=std::snprintf(buf+o,sizeof buf-o,"%.3f ",rdf(p.C+((uint64_t)pp*8+j)*4));
+                    std::fprintf(stderr,"%s\n",buf);
+                }
             }
-            double emax_relu = emax;
-            if (vn==0)
-                std::fprintf(stderr,"[gcnt] rsi_f=%llu ldc_f=%llu r11=%llu r12=%llu r13=%llx r13dec=%llx r14=%llx rbp=%llu r15=%llu flags=%d C[0..2][0]=%.3f %.3f %.3f\n",
-                    (unsigned long long)(rsi/4),(unsigned long long)ldc_f,(unsigned long long)p.r11,
-                    (unsigned long long)p.r12,(unsigned long long)p.r13,(unsigned long long)p.r13dec,
-                    (unsigned long long)p.r14,(unsigned long long)(p.rbp/4),(unsigned long long)(p.r15/4),
-                    p.flags,Cval(0,0),Cval(1,0),Cval(2,0));
-            std::fprintf(stderr,"[gverify] #%d M=%llu N=%llu flags=%d err=%.5g err_relu=%.5g\n",
-                         ++vn,(unsigned long long)M,(unsigned long long)N,p.flags,emax,emax_relu);
         }
-        if (M && N && M <= 64 && N <= 4096) {
+        if (M && N && M <= 64 && N <= 4096 && regs[11] == 4) {
             auto rd = [&](uint64_t o)->uint64_t{ try{return mem_.read64(sp+o);}catch(...){return 0;} };
-            p.A=regs[RDI]; p.B=regs[RDX]; p.C=regs[8];
+            p.A=regs[RDI]; p.B=regs[RDX]; p.C=regs[8]; p.r9=regs[9];
             p.rsi=rd(0x128); p.ldc=rd(0x130)/4;
             p.rbp=rd(0x110); p.r15=rd(0x120);
             p.r11=rd(0x138); p.r12=rd(0x140);
             p.r13=0 - rd(0x148);                              // neg r13
             p.r13dec=rd(0x158); p.r14=rd(0x150);
+            p.r10=rd(0x160)+rd(0x168)+rd(0x170);
             p.bias=rd(0x178); p.flags=(int)rd(0x180);
+            p.CountM=regs[11]; p.s118=rd(0x118); p.s138=rd(0x138);
+            p.s160=rd(0x160); p.s168=rd(0x168); p.s170=rd(0x170);
             if (!p.ldc) p.ldc=2560;
-            p.cinit.assign(3*8, 0.0f);
-            for (uint64_t m=0;m<3;++m) for (uint64_t j=0;j<8;++j)
-                p.cinit[m*8+j]=rdf(p.C+(m*p.ldc+j)*4);
+            { static bool once=true; if(once){ once=false;
+                std::fprintf(stderr,"[graw] A=%llx B=%llx C=%llx r9=%lld rbp=%lld r15=%lld r13(-s148)=%lld r13dec(s158)=%lld r14(s150)=%llu r11=%llu r12=%llu rsi=%llu ldc=%llu flags=%d\n",
+                    (unsigned long long)p.A,(unsigned long long)p.B,(unsigned long long)p.C,(long long)p.r9,
+                    (long long)p.rbp,(long long)p.r15,(long long)p.r13,(long long)p.r13dec,
+                    (unsigned long long)p.r14,(unsigned long long)p.r11,(unsigned long long)p.r12,
+                    (unsigned long long)p.rsi,(unsigned long long)p.ldc,p.flags);
+            }}
+            // Compute the full prediction NOW (A/B fresh) into p.pred[panel][m][j].
+            uint64_t rsi=p.rsi, r10=p.r10; if (r10>4096) r10=4096;
+            int MR=(int)p.CountM; if (MR<1) MR=1; if (MR>8) MR=8;
+            p.pred.assign(r10*8*8, 0.0f);
+            uint64_t Acur=p.A;
+            for (uint64_t panel=0; panel<r10; ++panel) {
+                double Cacc[8][8]; for(int m=0;m<8;++m)for(int j=0;j<8;++j)Cacc[m][j]=0.0;
+                uint64_t rcx=Acur, rdx=p.B; int64_t r13=(int64_t)p.r13;
+                for (uint64_t mb=0; mb<p.r11; ++mb) {
+                    for (uint64_t it=0; it<p.r12; ++it) {
+                        if ((uint64_t)(rcx + (uint64_t)r13) < p.r14)
+                            for (int s=0;s<8;++s) {
+                                float a = rdf(rcx + (uint64_t)s*4);
+                                for (int m=0;m<MR;++m) for (int j=0;j<8;++j)
+                                    Cacc[m][j] += (double)a *
+                                        rdf(rdx + (uint64_t)m*rsi + (uint64_t)s*0x20 - 0x80 + (uint64_t)j*4);
+                            }
+                        rcx += p.rbp; rdx += 0x100;
+                    }
+                    rcx += p.r15; r13 -= (int64_t)p.r13dec;
+                }
+                for (int m=0;m<MR;++m) for (int j=0;j<8;++j) {
+                    double v=Cacc[m][j]; if (p.flags&4) v=v<0?0:v;
+                    p.pred[(panel*8+(uint64_t)m)*8+j]=(float)v;
+                }
+                Acur += p.r9;
+            }
             p.live=true;
         } else {
             p.live=false;
+            p.pred.clear();
+        }
+    }
+
+    // TRAJECTORY LOG: the M>=4 outer-loop top (0x21F202A).  At each hit rcx=rdi (A
+    // base for this panel) and r8=C base, revealing exactly how they advance per
+    // panel — the real per-panel A/C addressing the static analysis couldn't pin.
+    if (g_gemm_probe && start == 0x1422f202aull) {   // emu base 0x140100000 + RVA 0x21F202A
+        static int tn = 0;
+        if (tn < 16) {
+            std::fprintf(stderr,"[gtraj] #%d rcx=%llx r8=%llx rdx=%llx r9=%llx r10=%llx\n",
+                tn, (unsigned long long)regs[RCX], (unsigned long long)regs[8],
+                (unsigned long long)regs[RDX], (unsigned long long)regs[9],
+                (unsigned long long)regs[10]);
+            ++tn;
         }
     }
 
