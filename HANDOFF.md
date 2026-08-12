@@ -97,14 +97,31 @@ none in the readme:
 `anpr_initialize` after the fingerprint lookup succeeds, and their contents decide
 the verdict.  Does that Policies key have a `profile` value?
 
-## TODAY'S GOAL
-Feed **uniform fixed values** for every fingerprint input (zero host reads) so
-`x86emu` derives `73e3e418…` and recognises plates on **Windows, Linux and wasm from
-GitHub alone**. The current failure is a **mix of fixed + host inputs**: on Windows
-the host parts yield `9ef9aab8…` → `(105) License not installed`; off Windows the
-host parts are empty. Must be 100% fixed.
+## GOAL — REACHED (aarch64 macOS, native x86emu)
+
+With all four oracles and no host reads, `x86emu` derives the native value name
+`73e3e41855fba8d949120fe4ac51b3f4`, finds the licence record, passes
+`anpr_initialize`, runs inference and **recognises every sample plate** — the full
+`多摩500さ4649` … `越谷300ち7985` set, all three images, all option variants:
+
+    EMU_GEMM_SKIP=1 EMU_AES_SKIP=1 EMU_ZERO_HOOK=1 EMU_STDOUT_TTY=1 ./x86emu \
+      --pnf 'C:\Windows\inf\vxd8.PNF=oracle_vxd8_pnf.txt' \
+      --iftable oracle_iftable2.txt --wmi oracle_wmi.txt \
+      --registry backup/policies1.reg --registry backup/policies2.reg ./anpr.exe
+
+~8 min for all images on M2 (first plate ~2.5 min), peak RSS 1.3 GB.  Zero host
+WMI/registry/HID reads, so the same should hold on Linux and wasm.  The four flags
+`--registry` / `--wmi` / `--iftable` / `--pnf` and their oracle files are all on
+`main`.  What remains is **speed** (offload more ONNX kernels natively, like
+voicevox_emu's CUDA-shim) and **wasm/browser** (build + feed the oracles without a
+command line) — optimisation and packaging, not correctness.
 
 ## What `main` ALREADY has (do not redo)
+- `--pnf P=F` (hooks_files.cpp): serves a captured file (`vxd8.PNF`) by content on any
+  CreateFile/ReadFile of path P. Oracle: `oracle_vxd8_pnf.txt`. **This is the piece
+  that flips `anpr_initialize` from (105) to pass.**
+- `--iftable F` (hooks_win32d.cpp): serves the `GetIfTable2Ex` 28-interface blob on
+  every arch. Oracle: `oracle_iftable2.txt`. This is what makes the value name match.
 - `--wmi <file>` → `load_wmi_answers` (hooks_wmi.cpp): replays WMI from a file instead
   of host `CoCreateInstance`/`ExecQuery`. Oracle: `oracle_wmi.txt`.
 - `--registry <file>` (repeatable): replays the licence blob + fingerprint value from
@@ -114,33 +131,39 @@ host parts are empty. Must be 100% fixed.
   caused `std::stoi("")`→`(105)` is already gone on `main`.)
 - HID/SetupApi bridge + `setupapi hid` linked; a replay matcher.
 
-## What `main` still LACKS — the real remaining work
-1. **Golden interface-table data — NOW ADDED as `oracle_iftable2.txt`.** This is the
-   `GetIfTable2Ex` table (28 interfaces) captured on the licensed machine: decoded +
-   the raw 37864-byte blob as hex. It is exactly the piece `oracle_wmi.txt` flagged as
-   "missing … and not recorded anywhere". Adapter GUIDs `{5C737FB0}`,`{B97D8E86}`,
-   `{4F3E241F}` all live in this table.
-2. ~~No `GetIfTable2` replay path.~~ **DONE — `--iftable <file>` is on `main`.**
-   hooks_win32d.cpp loads the `IFTABLE2_RAW_HEX=` blob and both `GetIfTable2` and
-   `GetIfTable2Ex` serve it verbatim on every arch, in preference to the host's own
-   table (a frozen table is the point; the host's would be a different machine).
-3. ~~WMI NetworkAdapter DeviceIDs are placeholders.~~ **DONE.** `oracle_wmi.txt` now
-   answers per GUID - `{5C737FB0}`→`0`, `{B97D8E86}`→`11` - and gives `{4F3E241F}` no
-   line, so that query finds nothing, which is what the licensed machine answers.
-4. Confirm nothing ELSE feeds the hash (volume serial, `MachineGuid`,
-   `GetAdaptersAddresses`). If it does, freeze it too.
+## What remains (all optional now that it passes)
+1. **Speed.** Recognition is minutes because only AES decrypt, the SGEMM inner loop
+   (`EMU_GEMM_SKIP`) and a zero-fill are native; the rest of ONNX Runtime is still
+   interpreted. The lever is offloading more hot kernels to native code (as
+   voicevox_emu's `vvcudaemu` does for the whole arithmetic via a CUDA shim). Use the
+   profiler / `EMU_SCAN` to find the top RVAs and hook them like the SGEMM tile.
+2. **wasm / browser.** Peak RSS is 1.3 GB, well inside a tab. `wasm-emu/build.sh`
+   builds x86emu to wasm; the open question is feeding the four oracles without a
+   command line (NODERAWFS for node is easy; browser needs the files preloaded and the
+   flags synthesised in `wasm_api`).
+3. Nothing else is known to feed the hash. If a future capture shows volume serial /
+   `MachineGuid` / `GetAdaptersAddresses` mattering, freeze it the same way.
 
 ## Golden data (all captured on the licensed machine; committed)
-- `oracle_iftable2.txt` — interface table (NEW, this commit).
-- `oracle_wmi.txt` — WMI (BaseBoard → 0 rows; Processor Name=`virt-9.1`
-  ProcessorId=`0000000000000000`; NetworkAdapter DeviceIDs need the real 0/11).
-- `backup/policies1.reg`,`policies2.reg` — licence blob + fingerprint value name.
+- `oracle_iftable2.txt` — `GetIfTable2Ex` table, 28 interfaces (`--iftable`).
+- `oracle_wmi.txt` — WMI: BaseBoard → 0 rows; Processor Name=`virt-9.1`
+  ProcessorId=`0000000000000000`; NetworkAdapter `{5C737FB0}`→`0`, `{B97D8E86}`→`11`
+  (`--wmi`).
+- `oracle_vxd8_pnf.txt` — `C:\Windows\inf\vxd8.PNF`, 2432 bytes, read after the
+  lookup (`--pnf`). `vxd.PNF` and the `profile` value are genuinely absent, so their
+  "not found" is correct — do not invent them.
+- `backup/policies1.reg`,`policies2.reg` — licence blob + fingerprint value name
+  (`--registry`).
 
-## Validate (once #2/#3 are wired)
+## Validate (the passing command)
 ```
-x86emu --wmi oracle_wmi.txt --iftable oracle_iftable2.txt \
-       --registry backup/policies1.reg --registry backup/policies2.reg anpr.exe
+EMU_GEMM_SKIP=1 EMU_AES_SKIP=1 EMU_ZERO_HOOK=1 EMU_STDOUT_TTY=1 x86emu \
+  --pnf 'C:\Windows\inf\vxd8.PNF=oracle_vxd8_pnf.txt' \
+  --iftable oracle_iftable2.txt --wmi oracle_wmi.txt \
+  --registry backup/policies1.reg --registry backup/policies2.reg anpr.exe
 ```
+Expect the six-plate set, not `(105)`. Without `EMU_STDOUT_TTY=1` the plates are
+buffered by the guest CRT and only appear (if at all) at exit.
 With `-c`, the fingerprint query must read `RegQueryValueEx(73e3e418…)` (NOT
 `9ef9aab8…`); a plain run must print plates (`多摩500さ4649` …). **Runs are slow
 (2 min+) under Prism — be patient;** `(105)` used to appear fast, so "no quick error"

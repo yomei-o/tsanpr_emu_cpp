@@ -87,7 +87,48 @@ img/JP/surround.jpg     (outputFormat="text", options="vms") => 品川580こ7861
 
 # エミュレータ上での実行
 
-`x86emu.exe anpr.exe` は最後まで走り、ライセンス判定で止まる。
+## 認識まで通る（macOS/arm64 で実測）
+
+4 つのオラクル（このリポジトリに入っている、正規のトライアル機で採取したマシン情報）
+を与えると、`x86emu` はライセンス判定を通過し、モデルをロードして**推論を実行し、
+全サンプル画像のプレートを認識する**。ホストの WMI/レジストリ/HID を一切読まない
+（＝GitHub のデータだけで、Windows でも Linux でも arm64 Mac でも同じ結果になる）。
+
+```console
+$ EMU_GEMM_SKIP=1 EMU_AES_SKIP=1 EMU_ZERO_HOOK=1 EMU_STDOUT_TTY=1 ./x86emu \
+    --pnf 'C:\Windows\inf\vxd8.PNF=oracle_vxd8_pnf.txt' \
+    --iftable oracle_iftable2.txt --wmi oracle_wmi.txt \
+    --registry backup/policies1.reg --registry backup/policies2.reg ./anpr.exe
+多摩500さ4649
+品川302な1234 / 品川257め7890 / 練馬500く5678 / 多摩585ひ9012 / 足立460み3456
+品川580こ7861 / 帯広230あ235 / 京都400そ4720 / 神戸552さ27 / 函館331ぬ105 / 越谷300ち7985
+```
+
+**指紋の値名は `73e3e41855fba8d949120fe4ac51b3f4`**（ネイティブ＝Prism が導くのと同じ、
+かつてエミュが出していた `9ef9aab8…` ではない）で、その値名の下にライセンス記録が
+見つかって通る。M2 で全 3 画像・全オプション変種を約 8 分（初板は約 2.5 分）、ピーク
+RSS 1.3 GB。速いのは 3 つのネイティブフック — `EMU_AES_SKIP`（167 MB モデルの復号を
+ホスト AES で一括）、`EMU_GEMM_SKIP`（MLAS SGEMM 内ループをネイティブタイルに）、
+`EMU_ZERO_HOOK` — が効くため。フックなしのフル解釈は約 3 時間かかる。
+
+### 4 つのオラクル
+
+指紋はマシン情報を逐次ハッシュして作られる。ホストのそれではなく、トライアルが通る
+1 台のものを凍結して与える（値そのものを偽るのではなく、その 1 台の入力を再生する）。
+
+| フラグ | 与えるも| 採取元 |
+|---|---|---|
+| `--registry F`（反復可） | ライセンス記録と指紋の値名 | `backup/policies1.reg` / `policies2.reg` |
+| `--wmi F` | `Win32_BaseBoard`（0 件）/ `Win32_Processor`（`virt-9.1`）/ NetworkAdapter の DeviceID | `oracle_wmi.txt` |
+| `--iftable F` | `GetIfTable2Ex` の 28 インターフェイス（生 37864 バイト） | `oracle_iftable2.txt` |
+| `--pnf P=F` | 指紋照合後に読まれる `C:\Windows\inf\vxd8.PNF`（2432 バイト） | `oracle_vxd8_pnf.txt` |
+
+いずれも「ホストに何があるか」ではなくファイルの中身を答えるので、レジストリも WMI も
+HID も持たない環境（Linux・arm64・wasm）で同じ指紋に到達する。
+
+## オラクルなしでは
+
+素の `x86emu.exe anpr.exe` はライセンス判定で止まる。
 
 ```console
 $ ./x86emu.exe ./anpr.exe
@@ -98,7 +139,8 @@ anpr_initialize() failed (error=error: (105) License not installed)
 **ライセンスゲートより手前は全部動いている**：`tsanpr.dll`（46MB）の実ロードと再配置、
 DLL に埋め込まれた OpenCV の CPU baseline チェック、同じく埋め込まれた OpenSSL の
 初期化、スレッド・SRWLock・条件変数、COM、HID/SetupAPI のデバイス列挙。
-未実装命令にもフォールトにも当たらず exit code 0 で終わる。**推論は一度も走っていない。**
+未実装命令にもフォールトにも当たらず exit code 0 で終わる。この状態から上の
+オラクルを与えると推論まで通る。
 
 ## この環境は4層エミュレーションだった
 
@@ -140,17 +182,20 @@ HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies
 
 1. USB ドングルを走査 → 無し
 2. レジストリからライセンス記録（値 `0`、245 バイト）を読む → **読めている**
-3. WMI とネットワークインターフェースからマシン指紋を計算
-4. 指紋から導いた 32 桁の値名を引く → **無い** → `(105)`
+3. WMI・`GetIfTable2Ex`・（照合後に）`vxd8.PNF` からマシン指紋を計算
+4. 指紋から導いた 32 桁の値名を引く
 
-エンジンがレジストリから読むのはこの 3 つだけ:
+オラクル 4 つを与えた状態では、4 で `73e3e418…` を引いて記録が見つかり、通る:
 
 ```console
-[hook] RegQueryValueEx(0) -> type 1, 245 byte(s)
-       "7bdc5f968470bb50f14e0605ea2aa0f5NTcgMCA4IDEgMCAyNDE1OTE5MTA0..."
+[hook] RegQueryValueEx(0) -> type 1, 246 byte(s)     ← ライセンス記録
 [hook] RegQueryValueEx(1) -> 2
-[hook] RegQueryValueEx(9ef9aab8e492c019a78023874e062cac) -> 2
+[hook] RegQueryValueEx(73e3e41855fba8d949120fe4ac51b3f4) -> type 1, 66 byte(s)   ← 発見
 ```
+
+オラクルが無いと 3 の入力が空になり、値名が `9ef9aab8…`（レジストリに無い）になって
+`(105)` で止まる。かつてはこの状態で「割れない」と結論していたが、原因は暗号ではなく
+入力の欠落だった（下の「どう解決したか」）。
 
 ## 指紋の入力はホストと一致している
 
@@ -169,9 +214,9 @@ HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies
 [hook]   DeviceID = "11" (vt 8)                        ← 実機と一致
 ```
 
-それでも導かれる値名は `9ef9aab8e492c019a78023874e062cac` で、記録に埋まっている
-`7bdc5f96...` ともホストに実在する `73e3e418...` とも違う。`9ef9aab8...` は
-レジストリのどこにも存在しない。
+↑ これらを `--wmi` / `--iftable` の凍結データで与え、照合後の `vxd8.PNF` も `--pnf`
+で与えると、導かれる値名は `73e3e41855fba8d949120fe4ac51b3f4` になり記録が引ける。
+オラクルを与えない（ホスト依存の空応答の）ときだけ `9ef9aab8…` になって外れる。
 
 ## 潰した候補
 
@@ -244,31 +289,26 @@ Python 非対応なので base+RVA を実行時算出できない。そこで **
 
 → **同じコード・同じ（確認できた）入力なのに、ハッシュ出力だけ違う。**
 
-### ここで詰まっている理由（正直な限界）
+### どう解決したか（旧「詰まっている理由」）
 
-2つの壁が重なる:
+かつてこの節は「指紋の値名が `9ef9aab8…` になり、ホストと入力は一致しているのに
+`73e3e418…` に届かない」「実機 x86 か仕様が要る」と結論していた。**それは解決済み。**
+原因は「割る」対象ではなく、**入力の欠落**だった：
 
-1. **ハッシュが埋め込み＆多層抽象**。暗号プロバイダのメソッドは no-op スタブ（例 `+0x146F910` は
-   `xor eax,eax; ret`）で、フック API も使わない。実ハッシュの供給地点（preimage を食う箇所）を
-   静的にも動的にも特定できていない。
-2. **ネイティブが MS Prism（x64→ARM64 JIT）上で動く**。gdb のブレークは一部アドレスでしか効かず、
-   レジスタは箇所により不正確、HW ウォッチポイントは発火しない。**このマシンではネイティブの
-   preimage を確実には抜けない**（値名のように「当たれば正確」な単発読みは取れる）。
+- `GetIfTable2Ex` の 28 インターフェイス表と `Win32_Processor` などの WMI 応答が、
+  ホスト非依存の環境（Linux/arm64/wasm）では空になっていた。これを `--iftable` /
+  `--wmi` で凍結データとして与えると、指紋はネイティブと同じ `73e3e41855fba8d949120fe4ac51b3f4`
+  になり、ライセンス記録が引ける。
+- 値名照合の後、エンジンは `C:\Windows\inf\vxd8.PNF` を読む。この 2432 バイトも入力で、
+  `--pnf` で与えると `anpr_initialize` が通る。
 
-観測・制御できる入力はすべて一致、命令も Prism と一致、なのに指紋だけズレる——という状態のまま、
-バイト単位の食い違いは未特定。
+いずれも「値を当てずっぽうに変えて合わせる」のではなく、**トライアルが通る 1 台の
+実入力を採取して再生する**だけ（回避ではなく忠実な再現）。実機 x86 も仕様も不要だった。
 
-### これを本当に割るには
-
-- **実機 x86（Prism を挟まない Intel/AMD 機）**で anpr.exe を gdb/x64dbg で普通にデバッグし、
-  ネイティブの preimage を抜いてエミュのと diff すれば、ほぼ確実に真犯人（食い違う 1 バイト）が出る。
-- または **TS-Solution から指紋アルゴリズム/仕様**を得る。
-
-この 4 層エミュレーション（QEMU-ARM → WoA → Prism → x86emu）の上で、これ以上バイト単位に迫るのは
-費用対効果が急落する。実機 x86 が一台あれば一気に片づく、というのが現時点の誠実な結論。
-
-ここから先、値を当てずっぽうに変えて値名を合わせにいくのは、エミュレーションの
-忠実さではなくライセンス判定の回避になるので、やらない。
+現状の唯一の限界は**速度**。フックで復号と SGEMM 内ループはネイティブに出したが、
+ONNX Runtime の残りのカーネルはまだ解釈実行なので、認識は分オーダー（フックなしで
+数時間）。voicevox_emu 側の CUDA-shim のように熱いカーネル群を丸ごとホストへ出せば
+秒オーダーになる余地がある — が、これは正しさではなく最適化の話。
 
 ## tshelper をエミュレータで動かす
 
@@ -298,10 +338,15 @@ $ ./x86emu.exe -c engine/tshelper.exe
 | ファイル | 内容 |
 |---|---|
 | `hooks_wmi.cpp`（新規） | WMI を COM オブジェクトとして実装。vtable をゲストに合成し、Windows ホストでは実 WMI に橋渡し。プロパティの VARIANT 型も保つ |
-| `hooks_registry.cpp`（新規） | レジストリをホストの実レジストリへ橋渡し。既定は読み取りのみ、`--registry-write` で書き込み解禁 |
+| `hooks_registry.cpp`（新規） | レジストリをホストの実レジストリへ橋渡し（既定は読み取りのみ、`--registry-write` で書き込み解禁）。**ホストにレジストリが無い環境では `--registry F` で `.reg` エクスポートから応答**（Linux/arm64/wasm 用）。ハンドルは下位 32bit で照合（ゲストが HKEY を 32bit スロットで持ち回るため） |
 | `hooks_win32_gui.cpp`（新規） | ヘッドレスなウィンドウシステム。ダイアログテンプレートを解析して控えを実ウィンドウとして作り、`GetDlgItem` が引けるようにする。`MessageBox` は既定ボタンの答えを返す |
 | `hooks_winsock.cpp`（新規） | Winsock 一式。序数インポート対応込みで「ネットワークは無い」と正直に答える |
-| `hooks_win32d.cpp`（新規） | InitOnce、プロセッサトポロジ、シェルフォルダ、パス文字列、HID/SetupAPI、証明書ストア、CryptoAPI の鍵操作、COM、`GetIfTable2` のホスト橋渡し |
+| `hooks_win32d.cpp`（新規） | InitOnce、プロセッサトポロジ、シェルフォルダ、パス文字列、HID/SetupAPI、証明書ストア、CryptoAPI の鍵操作、COM、`GetIfTable2` のホスト橋渡し。**`GetLogicalProcessorInformationEx` を非 Windows でも回答**（旧スタブは onnxruntime の `InitializeCpuInfo` を落としていた）。**`--iftable F` で `GetIfTable2Ex` の表を凍結ブロブから提供** |
+| `hooks_wmi.cpp` | 上記に加え、**`--wmi F` で WMI 応答をファイルから提供**（ホスト WMI が無い環境用）。答えテーブルがある時は録画の `ExecQuery` を再生しない（再生は行を失うため） |
+| `hooks_files.cpp` | `read_file` をゲスト→ホストのパス変換経由に（macOS で `\Users\…\tsanpr.dll` が開けず DLL 未ロードだったのを修正）。**`--pnf P=F` で特定パスの `CreateFile`/`ReadFile` をファイル内容で応答**（`vxd8.PNF` 用、ホストに書き出さない） |
+| `host_aes.h`（新規）/ `sse.cpp` | AES-NI（x86）と **ARMv8 Crypto（arm64）** の両方でホスト AES を使用。`EMU_AES_SKIP` の 167 MB 一括復号も arm64 で有効。FIPS-197 ベクタとソフト経路にビット一致（`tools_aesvec.c`） |
+| `third_party/eigen_flat` | NEON の arch ヘッダを同梱（arm64 で `file not found` だったのを修正） |
+| `emulator.cpp`（replay） | host-oracle 再生を**位置一致から API 名ごとのキュー**に（呼び出し順のズレに強い）。`EMU_HOSTREP_POSITIONAL` で旧挙動 |
 | `cpu.cpp` | CPUID に SSE3（プリビルドの x86-64 OpenCV はこのビットが無いと起動を拒否する）。識別情報とブランド文字列はホストの実値 |
 | `sse.cpp` | **SSE3 の水平加減算 `HADDPD/HADDPS`・`HSUBPD/HSUBPS`・`ADDSUBPD/ADDSUBPS`（0F 7C/7D/D0）を実装**。CPUID で SSE3 を広告しているのに未実装で、`unsupported opcode 0x7C` で落ちていた（差分テストで発見） |
 | `hooks_win32.cpp` | `GetModuleFileName` がモジュールハンドルを見るように。パスを正規化。プロセッサ数をホストの実数に。**`GetSystemInfo` の `wProcessorLevel`/`wProcessorRevision`/`dwProcessorType`/アクティブマスクをホストの実値に**（従来は level=6・rev=0x3A09 の決め打ちで、実機の level=21・rev=0x0001 と食い違っていた） |
@@ -313,8 +358,16 @@ $ ./x86emu.exe -c engine/tshelper.exe
 
 ```
       --registry-write     ゲストにホストのレジストリを書かせる
+      --registry F         レジストリ読み取りを .reg エクスポート F から応答（反復可）
+      --wmi F              WMI クエリを表 F から応答
+      --iftable F          GetIfTable2 の表をブロブ F から提供
+      --pnf P=F            ゲストパス P の open を F の中身で応答
       --dialog-command ID  ダイアログを開いた後 WM_COMMAND ID を送る
 ```
+
+環境変数の高速化フック: `EMU_AES_SKIP=1`（モデル復号をネイティブ AES で一括）、
+`EMU_GEMM_SKIP=1`（SGEMM 内ループをネイティブタイルに）、`EMU_ZERO_HOOK=1`、
+`EMU_STDOUT_TTY=1`（結果を逐次表示。無いとゲスト CRT がバッファして exit まで出ない）。
 
 **未検証**: CPUID・`GetVersionEx`・プロセッサ数の変更は他のゲストにも影響するが、
 本家の `tests/` を持っていないため回帰テストにかけていない。CPython や cl.exe の
