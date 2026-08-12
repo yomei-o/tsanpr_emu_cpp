@@ -173,8 +173,84 @@ void Emulator::install_win32_dll_hooks() {
         for (DWORD i = 0; i < have; ++i) e.mem.write8(gbuf + i, host[i]);
         e.set_result(1);
 #else
-        e.set_last_error(50);  // ERROR_NOT_SUPPORTED
-        e.set_result(0);
+        // Off Windows there is no host API shaped like this one to bridge to, and
+        // the honest answer is the one the hooks around this give: one group, one
+        // node, one processor - which is what a cooperative interpreter of a
+        // single instruction stream is.  Describing the Mac's own eight cores
+        // would say something true about a machine the guest is not running on.
+        //
+        // What still has to be exact is the *shape*.  The caller walks the blocks
+        // by their own Size field and reads fields at fixed offsets, so a block
+        // that is the wrong length or has GroupCount in the wrong place is the
+        // same failure as refusing, one step later and harder to see.  Offsets
+        // below are x64 SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX: Relationship and
+        // Size at 0 and 4, the union at 8.
+        uint32_t rel = static_cast<uint32_t>(e.arg_slot(0));
+        uint64_t gbuf = e.arg_slot(1);
+        uint64_t glen = e.arg_slot(2);
+        if (glen == 0) { e.set_last_error(87); e.set_result(0); return; }  // ERROR_INVALID_PARAMETER
+        uint32_t guest_cap = e.mem.read32(glen);
+
+        std::vector<uint8_t> out;
+        auto u16 = [&out](uint16_t v) { out.push_back(v & 0xff); out.push_back(v >> 8); };
+        auto u32v = [&out](uint32_t v) {
+            for (int i = 0; i < 4; ++i) out.push_back((v >> (8 * i)) & 0xff);
+        };
+        auto u64v = [&out](uint64_t v) {
+            for (int i = 0; i < 8; ++i) out.push_back((v >> (8 * i)) & 0xff);
+        };
+        auto pad = [&out](size_t n) { out.insert(out.end(), n, uint8_t{0}); };
+        // GROUP_AFFINITY: KAFFINITY Mask, WORD Group, WORD Reserved[3].  16 bytes.
+        auto affinity = [&] { u64v(1); u16(0); pad(6); };
+        // PROCESSOR_RELATIONSHIP: Flags (no SMT), EfficiencyClass, Reserved[20],
+        // GroupCount at 30, one GROUP_AFFINITY at 32.  48 bytes with the header.
+        auto processor = [&](uint32_t which) {
+            u32v(which); u32v(48);
+            out.push_back(0); out.push_back(0); pad(20);
+            u16(1);
+            affinity();
+        };
+        // NUMA_NODE_RELATIONSHIP: NodeNumber, Reserved[20], GroupMask at 32.
+        auto numa_node = [&] {
+            u32v(1); u32v(48);
+            u32v(0); pad(20);
+            affinity();
+        };
+        // GROUP_RELATIONSHIP: MaximumGroupCount, ActiveGroupCount, Reserved[20],
+        // then PROCESSOR_GROUP_INFO at 32 - MaximumProcessorCount,
+        // ActiveProcessorCount, Reserved[38], ActiveProcessorMask.  80 bytes.
+        auto group = [&] {
+            u32v(4); u32v(80);
+            u16(1); u16(1); pad(20);
+            out.push_back(1); out.push_back(1); pad(38);
+            u64v(1);
+        };
+        switch (rel) {
+            case 0: processor(0); break;             // RelationProcessorCore
+            case 1: numa_node(); break;              // RelationNumaNode
+            case 2: break;                           // RelationCache: none reported
+            case 3: processor(3); break;             // RelationProcessorPackage
+            case 4: group(); break;                  // RelationGroup
+            case 0xffff:                             // RelationAll
+                processor(0); numa_node(); processor(3); group();
+                break;
+            default: break;                          // Die, Module, ... : none
+        }
+
+        uint32_t have = static_cast<uint32_t>(out.size());
+        e.mem.write32(glen, have);  // always report the required size
+        if (have == 0) {  // nothing of that kind exists, which is not a failure
+            e.set_last_error(0);
+            e.set_result(1);
+            return;
+        }
+        if (gbuf == 0 || guest_cap < have) {
+            e.set_last_error(122);  // ERROR_INSUFFICIENT_BUFFER
+            e.set_result(0);
+            return;
+        }
+        for (uint32_t i = 0; i < have; ++i) e.mem.write8(gbuf + i, out[i]);
+        e.set_result(1);
 #endif
     });
     win32("GetNumaHighestNodeNumber", 1, [](Emulator& e) {
