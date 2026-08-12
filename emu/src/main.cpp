@@ -34,6 +34,7 @@ void usage() {
                  "                       (repeatable; hosts with no registry of their own)\n"
                  "      --wmi F          answer WMI queries from the table in F\n"
                  "      --iftable F      serve GetIfTable2's table from the blob in F\n"
+                 "      --pnf P=F        answer opens of guest path P with the bytes in F\n"
                  "      --dialog-command ID  send a dialog WM_COMMAND ID after it opens\n"
                  "      --save-state F   write the guest's state to F and stop\n"
                  "      --save-at N      ...after N instructions (default: at once)\n"
@@ -103,6 +104,12 @@ int main(int argc, char** argv) {
                 return 2;
             }
             opt.iftable_file = argv[++i];
+        } else if (a == "--pnf") {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "%s needs guestpath=file\n", a.c_str());
+                return 2;
+            }
+            opt.pnf_files.push_back(argv[++i]);
         } else if (a == "--dialog-command") {
             if (i + 1 >= argc) {
                 std::fprintf(stderr, "%s needs a control id\n", a.c_str());

@@ -96,6 +96,12 @@ public:
         // carries its keys.  Empty means an enumeration finds nothing, which is
         // what it meant before and is a real answer on a machine that has none.
         std::vector<std::string> wmi_files;
+        // Files to answer by content rather than from disk, as "guest\\path=hexfile"
+        // (or "guest\\path=@oracle.txt" for a NAME_RAW_HEX= oracle).  A guest that
+        // opens one of these paths is handed a token and its reads come from the
+        // bytes, so a captured file - vxd8.PNF here - can be served without writing
+        // it into the host filesystem.  Matched case-insensitively on \\ or /.
+        std::vector<std::string> pnf_files;
         // The interface table to hand a guest that asks for one, frozen as data.
         // GetIfTable2 describes the machine, and a guest that hashes what comes
         // back needs the same rows everywhere - so when this is set it is served

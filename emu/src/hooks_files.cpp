@@ -55,6 +55,63 @@ namespace {
 // file.  A licensing library opens these to read a dongle's identity; on a
 // Windows host the honest answer is the host's own device, so the open is
 // forwarded there and the resulting HANDLE parked in the table above.
+// Files served by content, not from disk (--pnf).  A guest that opens one of these
+// paths - vxd8.PNF, captured on the licensed machine - gets a token from a range
+// of its own and its reads come from the bytes here, so the file never touches the
+// host filesystem.  The cursor lives beside the bytes; one guest reads it
+// sequentially and that is all this supports.
+struct PnfFile {
+    std::vector<uint8_t> bytes;
+    uint64_t pos = 0;
+};
+inline std::map<std::string, std::vector<uint8_t>>& pnf_bytes() {
+    static std::map<std::string, std::vector<uint8_t>> m;
+    return m;
+}
+inline std::map<uint64_t, PnfFile>& pnf_open() {
+    static std::map<uint64_t, PnfFile> m;
+    return m;
+}
+constexpr uint64_t kPnfHandleBase = 0xEE2F0000ull;
+
+inline std::string pnf_key(std::string p) {
+    for (char& c : p) { if (c == '\\') c = '/'; if (c >= 'A' && c <= 'Z') c += 'a' - 'A'; }
+    return p;
+}
+
+inline void load_pnf(const std::string& spec) {
+    size_t eq = spec.find('=');
+    if (eq == std::string::npos) { std::fprintf(stderr, "[pnf] want guestpath=file: %s\n", spec.c_str()); return; }
+    std::string path = spec.substr(0, eq), file = spec.substr(eq + 1);
+    std::FILE* fp = std::fopen(file.c_str(), "rb");
+    if (!fp) { std::fprintf(stderr, "[pnf] cannot open %s\n", file.c_str()); return; }
+    std::string text;
+    char buf[4096]; size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, fp)) > 0) text.append(buf, n);
+    std::fclose(fp);
+    std::string hex;
+    size_t raw = text.find("_RAW_HEX=");
+    if (raw != std::string::npos) {
+        size_t at = text.find('\n', raw);
+        for (size_t i = (at == std::string::npos ? text.size() : at + 1); i < text.size();) {
+            size_t nl = text.find('\n', i);
+            std::string line = text.substr(i, nl == std::string::npos ? nl : nl - i);
+            i = (nl == std::string::npos) ? text.size() : nl + 1;
+            size_t b = line.find_first_not_of(" \t\r");
+            if (b != std::string::npos && line[b] == '#') continue;
+            for (char c : line) if (std::isxdigit(static_cast<unsigned char>(c))) hex += c;
+        }
+    } else {
+        for (char c : text) if (std::isxdigit(static_cast<unsigned char>(c))) hex += c;
+    }
+    std::vector<uint8_t> data;
+    data.reserve(hex.size() / 2);
+    for (size_t i = 0; i + 1 < hex.size(); i += 2)
+        data.push_back(static_cast<uint8_t>(std::strtoul(hex.substr(i, 2).c_str(), nullptr, 16)));
+    std::fprintf(stderr, "[pnf] %s <- %s: %zu bytes\n", path.c_str(), file.c_str(), data.size());
+    pnf_bytes()[pnf_key(path)] = std::move(data);
+}
+
 bool is_device_path(const std::string& p) {
     return p.size() >= 4 && p[0] == '\\' && p[1] == '\\' &&
            (p[2] == '?' || p[2] == '.') && p[3] == '\\' &&
@@ -110,6 +167,7 @@ uint64_t win32_error_for(int64_t code) {
 }  // namespace
 
 void Emulator::install_file_hooks() {
+    for (const std::string& spec : options().pnf_files) load_pnf(spec);
     auto libc = [this](const char* name, std::function<void(Emulator&)> fn) {
         add_hook(name, 0, std::move(fn));
     };
@@ -377,6 +435,17 @@ void Emulator::install_file_hooks() {
         // Naming the path is what makes --trace-calls answer "what is this guest
         // looking for?", which is the first question when bringing one up.
         e.log_call("CreateFile(%s)", path.c_str());
+        {
+            auto it = pnf_bytes().find(pnf_key(path));
+            if (it != pnf_bytes().end()) {
+                static uint64_t next = kPnfHandleBase;
+                uint64_t h = next++;
+                pnf_open()[h] = PnfFile{it->second, 0};
+                e.log_call("  -> served from --pnf, %zu bytes", it->second.size());
+                e.set_result(h);
+                return;
+            }
+        }
 
 #if defined(_WIN32)
         // A device-interface path is forwarded to the host device it names, so a
@@ -472,6 +541,7 @@ void Emulator::install_file_hooks() {
     win32("CreateFileW", 7, [create_file](Emulator& e) { create_file(e, true); });
     win32("CloseHandle", 1, [](Emulator& e) {
         uint64_t h = e.arg_slot(0);
+        if (pnf_open().erase(h)) { e.set_result(1); return; }
 #if defined(_WIN32)
         if (void* host = lookup_host_handle(h)) {
             CloseHandle(reinterpret_cast<HANDLE>(host));
@@ -485,6 +555,20 @@ void Emulator::install_file_hooks() {
         e.set_result(1);
     });
     win32("ReadFile", 5, [](Emulator& e) {
+        {
+            auto it = pnf_open().find(e.arg_slot(0));
+            if (it != pnf_open().end()) {
+                PnfFile& f = it->second;
+                uint64_t buf = e.arg_slot(1), len = e.arg_slot(2), read_ptr = e.arg_slot(3);
+                uint64_t got = f.pos < f.bytes.size()
+                                   ? std::min<uint64_t>(len, f.bytes.size() - f.pos) : 0;
+                for (uint64_t i = 0; i < got; ++i) e.mem.write8(buf + i, f.bytes[f.pos + i]);
+                f.pos += got;
+                if (read_ptr) e.mem.write32(read_ptr, static_cast<uint32_t>(got));
+                e.set_result(1);
+                return;
+            }
+        }
         int fd = Emulator::fd_from_handle(e.arg_slot(0));
         uint64_t buf = e.arg_slot(1), len = e.arg_slot(2), read_ptr = e.arg_slot(3);
         std::vector<uint8_t> tmp(static_cast<size_t>(len));
@@ -520,6 +604,24 @@ void Emulator::install_file_hooks() {
         e.set_result(put < 0 ? 0 : 1);
     });
     win32("SetFilePointerEx", 5, [](Emulator& e) {
+        {
+            auto it = pnf_open().find(e.arg_slot(0));
+            if (it != pnf_open().end()) {
+                PnfFile& f = it->second;
+                int64_t distance = static_cast<int64_t>(e.arg_slot(1));
+                uint64_t new_ptr = e.arg_slot(2);
+                int method = static_cast<int>(e.arg_slot(3));
+                int64_t base = method == 1 ? static_cast<int64_t>(f.pos)
+                             : method == 2 ? static_cast<int64_t>(f.bytes.size()) : 0;
+                int64_t at = base + distance;
+                if (at < 0) at = 0;
+                if (at > static_cast<int64_t>(f.bytes.size())) at = f.bytes.size();
+                f.pos = static_cast<uint64_t>(at);
+                if (new_ptr) e.mem.write64(new_ptr, f.pos);
+                e.set_result(1);
+                return;
+            }
+        }
         Args a(e);
         int fd = Emulator::fd_from_handle(a.next_ptr());
         int64_t distance = static_cast<int64_t>(a.next_int(8));
@@ -530,6 +632,14 @@ void Emulator::install_file_hooks() {
         e.set_result(r < 0 ? 0 : 1);
     });
     win32("GetFileSizeEx", 2, [](Emulator& e) {
+        {
+            auto it = pnf_open().find(e.arg_slot(0));
+            if (it != pnf_open().end()) {
+                if (e.arg_slot(1)) e.mem.write64(e.arg_slot(1), it->second.bytes.size());
+                e.set_result(1);
+                return;
+            }
+        }
         int fd = Emulator::fd_from_handle(e.arg_slot(0));
         int64_t size = fd >= 0 ? e.files.size(fd) : -1;
         if (size >= 0 && e.arg_slot(1)) e.mem.write64(e.arg_slot(1), static_cast<uint64_t>(size));
@@ -547,6 +657,7 @@ void Emulator::install_file_hooks() {
         e.set_result(fd < 0 ? ~0ull : Emulator::handle_from_fd(fd));
     });
     win32("GetFileType", 1, [](Emulator& e) {
+        if (pnf_open().count(e.arg_slot(0))) { e.set_result(1u); return; }  // FILE_TYPE_DISK
         int fd = Emulator::fd_from_handle(e.arg_slot(0));
         auto* entry = fd >= 0 ? e.files.get(fd) : nullptr;
         if (!entry) {
