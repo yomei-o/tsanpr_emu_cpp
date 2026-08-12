@@ -20,6 +20,32 @@ The emulator only needs to feed the engine the same inputs the native run does.
   value name does not pass. Faking the record is impossible by design — this is a
   pure **input-fidelity** problem, nothing to crack.
 
+## STATUS on aarch64 macOS (M2), with 1+2+3 in place
+
+**The fingerprint matches and the licence record is found**, from the committed
+oracles alone and with no host reads:
+
+    ./x86emu --iftable oracle_iftable2.txt --wmi oracle_wmi.txt \
+             --registry backup/policies1.reg --registry backup/policies2.reg ./anpr.exe
+
+    [iftable] oracle_iftable2.txt: 37864 bytes, NumEntries=28
+    RegQueryValueEx(0) -> type 1, 246 bytes                  <- the licence blob
+    ExecQuery(Win32_BaseBoard) -> 0 rows
+    ExecQuery(Win32_Processor) -> 1 row
+    GetIfTable2(level 1) -> 37864 bytes from the frozen table
+    ExecQuery(... GUID='{5C737FB0-...}') -> 1 row
+    ExecQuery(... GUID='{B97D8E86-...}') -> 1 row
+    ExecQuery(... GUID='{4F3E241F-...}') -> no row
+    RegQueryValueEx(73e3e41855fba8d949120fe4ac51b3f4) -> type 1, 66 bytes   <- FOUND
+
+Both documented gates are behind us: this is the native value name, not the
+`9ef9aab8…` the readme's x86emu derived, and `EMU_STOIOBJ` shows both tokens
+healthy ("0" and "11") where gate 2 used to see an empty second one.
+
+**It still ends in `(105)`, after the record is read.** So there is a check beyond
+the lookup that has not been characterised yet. Next: find where the engine turns
+the 245-byte blob plus the 32-char value into a verdict, and what it compares.
+
 ## TODAY'S GOAL
 Feed **uniform fixed values** for every fingerprint input (zero host reads) so
 `x86emu` derives `73e3e418…` and recognises plates on **Windows, Linux and wasm from
@@ -43,15 +69,13 @@ host parts are empty. Must be 100% fixed.
    the raw 37864-byte blob as hex. It is exactly the piece `oracle_wmi.txt` flagged as
    "missing … and not recorded anywhere". Adapter GUIDs `{5C737FB0}`,`{B97D8E86}`,
    `{4F3E241F}` all live in this table.
-2. **No `GetIfTable2` replay path.** hooks_win32d.cpp only *host-forwards*
-   (`#if X86EMU_IFTABLE2` → `GetIfTable2Ex`) or returns an empty table off Windows.
-   There is no `--iftable` flag. **TODO:** add `--iftable <file>` in main.cpp and make
-   the `GetIfTable2`/`GetIfTable2Ex` hooks serve `oracle_iftable2.txt`'s raw blob
-   verbatim on every arch (the fingerprint ignores the volatile counter fields, so a
-   snapshot is stable). This is what unblocks the aarch64 box.
-3. **WMI NetworkAdapter DeviceIDs are placeholders** in `oracle_wmi.txt`
-   (`DeviceID=0` for all). Real values on the licensed machine: `{5C737FB0}`→`0`,
-   `{B97D8E86}`→`11`. Put the real per-GUID DeviceIDs in the oracle; they feed the hash.
+2. ~~No `GetIfTable2` replay path.~~ **DONE — `--iftable <file>` is on `main`.**
+   hooks_win32d.cpp loads the `IFTABLE2_RAW_HEX=` blob and both `GetIfTable2` and
+   `GetIfTable2Ex` serve it verbatim on every arch, in preference to the host's own
+   table (a frozen table is the point; the host's would be a different machine).
+3. ~~WMI NetworkAdapter DeviceIDs are placeholders.~~ **DONE.** `oracle_wmi.txt` now
+   answers per GUID - `{5C737FB0}`→`0`, `{B97D8E86}`→`11` - and gives `{4F3E241F}` no
+   line, so that query finds nothing, which is what the licensed machine answers.
 4. Confirm nothing ELSE feeds the hash (volume serial, `MachineGuid`,
    `GetAdaptersAddresses`). If it does, freeze it too.
 

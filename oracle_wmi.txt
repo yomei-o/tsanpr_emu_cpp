@@ -32,7 +32,9 @@ Win32_Processor    Name=virt-9.1  ProcessorId=0000000000000000
 # {5C737FB0-...} and {B97D8E86-...} are from an earlier run against a different
 # table and are not in this one, so matching on them answered nothing.
 #
-# One line for the class answers every adapter it asks about.  DeviceID here is a
-# placeholder: what the recorded machine's win32_NetworkAdapter said for each
-# adapter is not written down anywhere, and it is an input to the fingerprint.
-win32_NetworkAdapter   DeviceID=0
+# The real per-GUID answers from the licensed machine (oracle_iftable2.txt's
+# header records them).  Both GUIDs are rows of that interface table, and a third,
+# {4F3E241F-...}, is in the table but has no win32_NetworkAdapter row - so it gets
+# no line here and the query finds nothing, which is the answer.
+GUID='{5C737FB0-E5DD-4903-9A51-0DB60EA147B5}    DeviceID=0
+GUID='{B97D8E86-ABF6-433E-B515-C7B891D9D927}    DeviceID=11

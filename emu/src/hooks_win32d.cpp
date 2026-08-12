@@ -40,6 +40,7 @@
 #endif
 #endif
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -98,9 +99,67 @@ void write_narrow_dir(Emulator& e, uint64_t buf, uint64_t size, const std::strin
     e.set_result(s.size());
 }
 
+
+// The interface table, frozen as data.
+//
+// GetIfTable2 answers "what is this machine's networking", and a guest that folds
+// the answer into a machine fingerprint needs the same bytes everywhere or it
+// derives a different one.  Where the host has no such API there was an empty
+// table, and where it has one the answer was the host's - two ways to be a
+// different machine.  --iftable serves a captured MIB_IF_TABLE2 verbatim instead,
+// on every host, in preference to either.
+//
+// The file is the one oracle_iftable2.txt is: comments, then a line
+// IFTABLE2_RAW_HEX= followed by the table as one hex line, little-endian, exactly
+// as GetIfTable2Ex wrote it (an 8-byte header and NumEntries rows of 1352).
+std::vector<uint8_t>& iftable_blob() {
+    static std::vector<uint8_t> blob;
+    return blob;
+}
+
+void load_iftable(const std::string& path) {
+    std::FILE* fp = std::fopen(path.c_str(), "rb");
+    if (!fp) {
+        std::fprintf(stderr, "[iftable] cannot open %s\n", path.c_str());
+        return;
+    }
+    std::string hex;
+    bool in_blob = false;
+    std::vector<char> line(1 << 20);
+    while (std::fgets(line.data(), static_cast<int>(line.size()), fp)) {
+        std::string t(line.data());
+        while (!t.empty() && (t.back() == '\n' || t.back() == '\r')) t.pop_back();
+        if (!in_blob) {
+            if (t.rfind("IFTABLE2_RAW_HEX=", 0) == 0) {
+                in_blob = true;
+                hex += t.substr(std::strlen("IFTABLE2_RAW_HEX="));
+            }
+            continue;
+        }
+        if (!t.empty() && t[0] == '#') continue;
+        for (char c : t)
+            if (std::isxdigit(static_cast<unsigned char>(c))) hex += c;
+    }
+    std::fclose(fp);
+    if (hex.size() < 2 || (hex.size() & 1)) {
+        std::fprintf(stderr, "[iftable] %s: no IFTABLE2_RAW_HEX= blob\n", path.c_str());
+        return;
+    }
+    std::vector<uint8_t>& blob = iftable_blob();
+    blob.clear();
+    blob.reserve(hex.size() / 2);
+    for (size_t i = 0; i + 1 < hex.size(); i += 2)
+        blob.push_back(static_cast<uint8_t>(std::strtoul(hex.substr(i, 2).c_str(), nullptr, 16)));
+    uint32_t entries = blob.size() >= 4 ? static_cast<uint32_t>(blob[0]) | (static_cast<uint32_t>(blob[1]) << 8) |
+                                              (static_cast<uint32_t>(blob[2]) << 16) | (static_cast<uint32_t>(blob[3]) << 24)
+                                        : 0;
+    std::fprintf(stderr, "[iftable] %s: %zu bytes, NumEntries=%u\n", path.c_str(), blob.size(), entries);
+}
+
 }  // namespace
 
 void Emulator::install_win32_dll_hooks() {
+    if (!options().iftable_file.empty()) load_iftable(options().iftable_file);
     auto win32 = [this](const char* name, int nargs, std::function<void(Emulator&)> fn) {
         add_hook(name, is64() ? 0 : nargs * 4, std::move(fn));
     };
@@ -887,6 +946,16 @@ void Emulator::install_win32_dll_hooks() {
             return;
         }
         uint64_t table = 0;
+        // A frozen table wins over the host's own: that is the whole point of
+        // having one - the same machine on every arch.
+        if (!iftable_blob().empty()) {
+            table = e.alloc_guest_data(iftable_blob().data(), iftable_blob().size());
+            e.log_call("GetIfTable2(level %d) -> %zu bytes from the frozen table", level,
+                       iftable_blob().size());
+            e.mem.write_sized(out, e.pointer_size(), table);
+            e.set_result(0);  // NO_ERROR
+            return;
+        }
 #if defined(X86EMU_IFTABLE2)
         if (e.is64()) {
             MIB_IF_TABLE2* host = nullptr;

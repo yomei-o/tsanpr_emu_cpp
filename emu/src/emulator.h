@@ -96,6 +96,11 @@ public:
         // carries its keys.  Empty means an enumeration finds nothing, which is
         // what it meant before and is a real answer on a machine that has none.
         std::vector<std::string> wmi_files;
+        // The interface table to hand a guest that asks for one, frozen as data.
+        // GetIfTable2 describes the machine, and a guest that hashes what comes
+        // back needs the same rows everywhere - so when this is set it is served
+        // on every host, in preference to the host's own table.
+        std::string iftable_file;
         // Control ids to send the dialog as WM_COMMAND once it has initialised.
         // With no screen there is no one to click anything, so a dialog-driven
         // program otherwise only ever gets as far as its first dialog.
