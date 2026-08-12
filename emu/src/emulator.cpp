@@ -439,13 +439,31 @@ bool Emulator::dispatch_hook(uint64_t addr) {
                 // The recorded hook, on Windows, reserved whatever pages it wrote
                 // (e.g. GetIfTable2Ex's output table); replay skips the hook, so
                 // reserve each touched page first or the write faults.
-                // NOTE: these addresses are the recording run's own.  Where a hook
-                // wrote into a buffer its caller passed - a stack address - this run
-                // puts that buffer somewhere slightly different (0x18 lower for the
-                // licence read here), and the bytes land beside it rather than in
-                // it.  Rebasing them onto the current call's own out-parameter is
-                // the fix, and it needs the shape of each call; see the commit that
-                // added this note.
+                // The recorded addresses are the recording run's own, and whether
+                // they are this run's too is the question EMU_HOSTREP_DEBUG answers:
+                // it prints, per replayed call, the lowest recorded frame address,
+                // this run's stack pointer and its argument slots.
+                //
+                // For the licence read here they disagree in a way a rebase cannot
+                // fix.  rsp matches (0xAFDD18), lpcbData matches (0xAFDD54), but the
+                // recording wrote its data to 0xafdd58 where this run passes
+                // lpData=0xAFDD70 and a non-null lpType=0xAFDD58 - the same frame,
+                // laid out differently, which means this run reaches the read by a
+                // different path than the recording did.  The divergence to find is
+                // upstream of the read, in whatever earlier input differs, not in the
+                // addresses.
+                if (std::getenv("EMU_HOSTREP_DEBUG")) {
+                    uint64_t lo = ~0ull;
+                    for (const auto& w : r.writes)
+                        if (w.first < 0x100000000ull && w.first < lo) lo = w.first;
+                    std::fprintf(stderr,
+                                 "[hostrep] %-32s lo=%llX rsp=%llX args=%llX,%llX,%llX,%llX,%llX,%llX\n",
+                                 h.name.c_str(), (unsigned long long)lo,
+                                 (unsigned long long)cpu_->regs[RSP],
+                                 (unsigned long long)arg_slot(0), (unsigned long long)arg_slot(1),
+                                 (unsigned long long)arg_slot(2), (unsigned long long)arg_slot(3),
+                                 (unsigned long long)arg_slot(4), (unsigned long long)arg_slot(5));
+                }
                 uint64_t last_page = ~0ull;
                 for (const auto& w : r.writes) {
                     uint64_t pg = w.first >> 12;
