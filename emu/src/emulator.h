@@ -25,6 +25,9 @@
 
 namespace x86emu {
 
+// hooks_wmi.cpp: is there an answer table to serve WMI queries from?
+bool wmi_answers_loaded();
+
 class System;
 
 // A registry of opaque host resources (e.g. a real Win32 HANDLE for a device the

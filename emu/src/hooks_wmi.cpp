@@ -207,6 +207,8 @@ std::string wmi_lower(std::string v) {
     return v;
 }
 
+bool g_wmi_answers_loaded = false;
+
 void load_wmi_answers(const std::string& path) {
     std::FILE* fp = std::fopen(path.c_str(), "rb");
     if (!fp) {
@@ -240,6 +242,7 @@ void load_wmi_answers(const std::string& path) {
         ++n;
     }
     std::fclose(fp);
+    if (n > 0) g_wmi_answers_loaded = true;
     std::fprintf(stderr, "[wmi] %s: %d row(s)\n", path.c_str(), n);
 }
 #endif  // !_WIN32
@@ -281,6 +284,20 @@ std::string read_bstr(Emulator& e, uint64_t p) {
 }
 
 }  // namespace
+
+// Whether ExecQuery has a working off-Windows path, which decides whether the
+// replay should leave it alone: a recorded ExecQuery hands the guest its recorded
+// return, but the rows live in the emulator's own object and the ::Next/::Get that
+// read them are not recorded (their hook names carry the interface and slot, so
+// the "::Next"/"::Get" test never matched them).  Replaying the query therefore
+// loses the rows.  An answer table does not.
+bool wmi_answers_loaded() {
+#if defined(_WIN32)
+    return false;
+#else
+    return g_wmi_answers_loaded;
+#endif
+}
 
 void Emulator::install_wmi_hooks() {
 #if !defined(_WIN32)

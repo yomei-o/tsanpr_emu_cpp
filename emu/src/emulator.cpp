@@ -418,7 +418,12 @@ bool Emulator::dispatch_hook(uint64_t addr) {
         return 0;
     }();
 
-    if (host_mode && idx != 0 && is_host_oracle(h.name)) {
+    bool oracle = is_host_oracle(h.name);
+    // An ExecQuery answered from a table is not replayed: replaying it would win
+    // the return value and lose the rows.
+    if (oracle && wmi_answers_loaded() && h.name.find("ExecQuery") != std::string::npos)
+        oracle = false;
+    if (host_mode && idx != 0 && oracle) {
         if (host_mode == 2) {
             auto queue = g_hostrep_by_name.find(h.name);
             if (queue != g_hostrep_by_name.end() && !queue->second.empty()) {
@@ -456,6 +461,9 @@ bool Emulator::dispatch_hook(uint64_t addr) {
                     uint64_t lo = ~0ull;
                     for (const auto& w : r.writes)
                         if (w.first < 0x100000000ull && w.first < lo) lo = w.first;
+                    if (h.name.rfind("RegQueryValue", 0) == 0 && arg_slot(1))
+                        std::fprintf(stderr, "[hostrep] %s(\"%s\")\n", h.name.c_str(),
+                                     utf16_to_utf8(*this, arg_slot(1), -1).c_str());
                     std::fprintf(stderr,
                                  "[hostrep] %-32s lo=%llX rsp=%llX args=%llX,%llX,%llX,%llX,%llX,%llX\n",
                                  h.name.c_str(), (unsigned long long)lo,
