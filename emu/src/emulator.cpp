@@ -3,6 +3,8 @@
 #include "guest_printf.h"
 
 #include <algorithm>
+#include <map>
+#include <set>
 #include <cinttypes>
 #include <limits>
 #include <cstring>
@@ -91,6 +93,15 @@ struct HostRec {
 std::FILE* g_hostrec_file = nullptr;          // record: append here
 std::vector<HostRec> g_hostrep;               // replay: in order
 size_t g_hostrep_pos = 0;
+// Replay is by name, not by position.  Each of these calls asks a question about
+// the machine and the recorded answer is that machine's answer to it; the order
+// the guest asks in is its own business, and it differs between the Windows run
+// that recorded and a replay elsewhere - one extra HID sweep here was enough to
+// throw a positional replay out by seventy calls.  So each name keeps its own
+// queue in recording order, and when a queue runs out the last answer stands,
+// which is what a fixed answer to a fixed question means.
+std::map<std::string, std::vector<size_t>> g_hostrep_by_name;
+std::map<std::string, size_t> g_hostrep_taken;
 
 void hostrec_write(const HostRec& r) {
     if (!g_hostrec_file) return;
@@ -133,6 +144,7 @@ bool hostrep_load(const char* path) {
         g_hostrep.push_back(std::move(r));
     }
     std::fclose(f);
+    for (size_t i = 0; i < g_hostrep.size(); ++i) g_hostrep_by_name[g_hostrep[i].name].push_back(i);
     return true;
 }
 }  // namespace
@@ -408,14 +420,32 @@ bool Emulator::dispatch_hook(uint64_t addr) {
 
     if (host_mode && idx != 0 && is_host_oracle(h.name)) {
         if (host_mode == 2) {
-            if (g_hostrep_pos < g_hostrep.size()) {
-                const HostRec& r = g_hostrep[g_hostrep_pos++];
-                if (r.name != h.name)
-                    std::fprintf(stderr, "[hostrep] desync at %zu: expected '%s' got '%s'\n",
-                                 g_hostrep_pos - 1, r.name.c_str(), h.name.c_str());
+            auto queue = g_hostrep_by_name.find(h.name);
+            if (queue != g_hostrep_by_name.end() && !queue->second.empty()) {
+                size_t& taken = g_hostrep_taken[h.name];
+                bool reused = taken >= queue->second.size();
+                if (reused) {
+                    // The queue is spent: this run asks more often than the
+                    // recording did.  The last answer stands rather than the call
+                    // falling through to a host that cannot answer it at all.
+                    static std::set<std::string> said;
+                    if (said.insert(h.name).second)
+                        std::fprintf(stderr, "[hostrep] '%s': %zu recorded, reusing the last\n",
+                                     h.name.c_str(), queue->second.size());
+                }
+                const HostRec& r =
+                    g_hostrep[queue->second[reused ? queue->second.size() - 1 : taken]];
+                if (!reused) ++taken;
                 // The recorded hook, on Windows, reserved whatever pages it wrote
                 // (e.g. GetIfTable2Ex's output table); replay skips the hook, so
                 // reserve each touched page first or the write faults.
+                // NOTE: these addresses are the recording run's own.  Where a hook
+                // wrote into a buffer its caller passed - a stack address - this run
+                // puts that buffer somewhere slightly different (0x18 lower for the
+                // licence read here), and the bytes land beside it rather than in
+                // it.  Rebasing them onto the current call's own out-parameter is
+                // the fix, and it needs the shape of each call; see the commit that
+                // added this note.
                 uint64_t last_page = ~0ull;
                 for (const auto& w : r.writes) {
                     uint64_t pg = w.first >> 12;
@@ -432,7 +462,7 @@ bool Emulator::dispatch_hook(uint64_t addr) {
                 if (r.heap_next > heap_next_) heap_next_ = r.heap_next;
                 if (r.mmap_next > mmap_next_) mmap_next_ = r.mmap_next;
             } else {
-                std::fprintf(stderr, "[hostrep] out of records at '%s'\n", h.name.c_str());
+                std::fprintf(stderr, "[hostrep] nothing recorded for '%s'\n", h.name.c_str());
                 h.fn(*this);
             }
         } else {  // record

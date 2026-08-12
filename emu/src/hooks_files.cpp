@@ -397,6 +397,24 @@ void Emulator::install_file_hooks() {
             }
             return;
         }
+#else
+        // Off Windows there is no device behind the path, and the guest is not
+        // really asking for one: it walks its HID interfaces to fold them into a
+        // machine fingerprint, and what it reads is HidD_GetAttributes and
+        // HidD_GetProductString.  Those come from the recorded oracle
+        // (EMU_HOSTREP), and they have to be called on *a* handle - so a
+        // device-interface path gets a token.  Failing the open instead sends the
+        // guest down a different branch and the replay desyncs a few dozen calls
+        // later, which is how this was found.  Nothing dereferences the token:
+        // fd_from_handle rejects it, so CloseHandle simply succeeds.
+        if (is_device_path(path)) {
+            static uint64_t next_device_token = 0xEE1D0000ull;
+            uint64_t token = next_device_token++;
+            e.log_call("CreateFile(%s) -> device token 0x%llX", path.c_str(),
+                       static_cast<unsigned long long>(token));
+            e.set_result(token);
+            return;
+        }
 #endif
 
         // Windows lets a program open a *directory* to ask about its attributes,

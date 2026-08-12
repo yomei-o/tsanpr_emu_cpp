@@ -678,7 +678,8 @@ void Emulator::install_registry_hooks() {
         }
         if (cap < need) { e.set_result(kMoreData); return; }
         for (uint32_t i = 0; i < need; ++i) e.mem.write8(pdata + i, v->second.data[i]);
-        e.log_call("RegQueryValueEx(%s) -> type %u, %u bytes", name.c_str(), v->second.type, need);
+        e.log_call("RegQueryValueEx(%s) -> type %u, %u bytes into 0x%llX", name.c_str(),
+                   v->second.type, need, static_cast<unsigned long long>(pdata));
         e.set_result(kOk);
     };
     add_hook("RegQueryValueExW", 0, [query_value](Emulator& e) { query_value(e, true); });
