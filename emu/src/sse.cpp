@@ -14,14 +14,12 @@
 #include <cstdlib>
 #include <cstring>
 
-// On a real x86 host the AES-NI and CLMUL instructions the guest uses to decrypt
-// its model can run on the host's own hardware instead of the byte-at-a-time
-// software emulation below — bit-identical (both are FIPS-197) and vastly faster.
-// Not available under WebAssembly, which keeps the software path.
-#if (defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)) && !defined(__wasm__) && !defined(__EMSCRIPTEN__)
-#define X86EMU_HOST_AESNI 1
-#include <wmmintrin.h>
-#endif
+// The AES instructions the guest uses to decrypt its model can run on the host's
+// own AES unit instead of the byte-at-a-time software emulation below — the same
+// FIPS-197 answer, and vastly faster.  x86-64 has AES-NI and AArch64 has ARMv8
+// Crypto; host_aes.h is where the difference between them lives.  Under
+// WebAssembly there is neither and the software path stays.
+#include "host_aes.h"
 
 #include "cpu.h"
 
@@ -1198,20 +1196,18 @@ bool Cpu::execute_sse(uint8_t op) {
             if (sel == Sel::P66 && op3 >= 0xDB && op3 <= 0xDF) {
                 RM rm = decode_modrm();
                 Xmm s = xmm_read(rm), d = xmm[modrm_reg_], r{};
-#if defined(X86EMU_HOST_AESNI)
-                // Run the round on the host's AES-NI unit.  Same FIPS-197 result,
+#if defined(X86EMU_HOST_AES)
+                // Run the round on the host's AES unit.  Same FIPS-197 result,
                 // orders of magnitude faster than the S-box/GF byte loop.
-                __m128i md = _mm_loadu_si128(reinterpret_cast<const __m128i*>(d.b));
-                __m128i ms = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s.b));
-                __m128i mr;
+                hostaes::Block md = hostaes::load(d.b), ms = hostaes::load(s.b), mr;
                 switch (op3) {
-                    case 0xDB: mr = _mm_aesimc_si128(ms);          ++g_aes.imc;     break;
-                    case 0xDC: mr = _mm_aesenc_si128(md, ms);      ++g_aes.enc;     break;
-                    case 0xDD: mr = _mm_aesenclast_si128(md, ms);  ++g_aes.enclast; break;
-                    case 0xDE: mr = _mm_aesdec_si128(md, ms);      ++g_aes.dec;     break;
-                    default:   mr = _mm_aesdeclast_si128(md, ms);  ++g_aes.declast; break;
+                    case 0xDB: mr = hostaes::imc(ms);          ++g_aes.imc;     break;
+                    case 0xDC: mr = hostaes::enc(md, ms);      ++g_aes.enc;     break;
+                    case 0xDD: mr = hostaes::enclast(md, ms);  ++g_aes.enclast; break;
+                    case 0xDE: mr = hostaes::dec(md, ms);      ++g_aes.dec;     break;
+                    default:   mr = hostaes::declast(md, ms);  ++g_aes.declast; break;
                 }
-                _mm_storeu_si128(reinterpret_cast<__m128i*>(r.b), mr);
+                hostaes::store(r.b, mr);
 #else
                 switch (op3) {
                     case 0xDB:  // AESIMC: the equivalent-inverse key schedule
@@ -1609,7 +1605,10 @@ bool Cpu::execute_sse(uint8_t op) {
                 Xmm s = xmm_read(rm);
                 uint8_t rcon = fetch8();
                 Xmm r{};
-#if defined(X86EMU_HOST_AESNI)
+// AESKEYGENASSIST has no ARMv8 Crypto counterpart - a key schedule there is built
+// from AESE and table lookups - so this one stays x86-only and everything else
+// takes the software path below, which a key schedule runs a handful of times.
+#if defined(X86EMU_HOST_AES_X86)
                 __m128i ms = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s.b));
                 // rcon is an immediate to the intrinsic; dispatch the ones a key
                 // schedule actually uses, else fall through to the byte version.

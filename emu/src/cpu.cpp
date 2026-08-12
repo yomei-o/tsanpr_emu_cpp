@@ -5,6 +5,7 @@
 #endif
 
 #include "cpu.h"
+#include "host_aes.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -1567,7 +1568,7 @@ void Cpu::step() {
         }
     }
 
-#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__wasm__) && !defined(__EMSCRIPTEN__)
+#if defined(X86EMU_HOST_AES)
     // AES-CBC decrypt native hook — the model-load bottleneck.  Function entry
     // 0x135A310 (emu 0x14145A310): crypt(src=rcx, dst=rdx, len=r8, key=r9,
     // iv=[rsp+0x28], enc=[rsp+0x30]); enc==0 => CBC DECRYPT.  Round keys are the
@@ -1587,33 +1588,33 @@ void Cpu::step() {
             ++hn, (unsigned long long)src, (unsigned long long)dst, (unsigned long long)len,
             (unsigned long long)key, (unsigned long long)flag, Nr1); } }
         if ((uint32_t)flag == 0 && len > 0 && (len % 16) == 0 && len <= 0x40000000ull && Nr1 >= 1 && Nr1 <= 20) {
-            auto ld = [&](uint64_t a) -> __m128i {
-                uint8_t b[16]; mem_.read(a, b, 16); return _mm_loadu_si128((const __m128i*)b);
+            auto ld = [&](uint64_t a) -> hostaes::Block {
+                uint8_t b[16]; mem_.read(a, b, 16); return hostaes::load(b);
             };
             bool ok = true;
             bool verify = g_aes_hook && !g_aes_skip;
             static std::vector<uint8_t> out;
-            __m128i lastc = _mm_setzero_si128();
+            hostaes::Block lastc = hostaes::zero();
             try {
-                __m128i K[24];
+                hostaes::Block K[24];
                 for (uint32_t i = 0; i < Nr1 + 2; ++i) K[i] = ld(key + (uint64_t)i * 16);
-                __m128i prev = ld(iv);
+                hostaes::Block prev = ld(iv);
                 uint64_t nb = len / 16;
                 if (verify) out.resize((size_t)len);
                 for (uint64_t b = 0; b < nb; ++b) {
-                    __m128i c = ld(src + b * 16);
-                    __m128i s = _mm_xor_si128(c, K[0]);
-                    for (uint32_t i = 1; i <= Nr1; ++i) s = _mm_aesdec_si128(s, K[i]);
-                    s = _mm_aesdeclast_si128(s, K[Nr1 + 1]);
-                    s = _mm_xor_si128(s, prev);
+                    hostaes::Block c = ld(src + b * 16);
+                    hostaes::Block s = hostaes::xorb(c, K[0]);
+                    for (uint32_t i = 1; i <= Nr1; ++i) s = hostaes::dec(s, K[i]);
+                    s = hostaes::declast(s, K[Nr1 + 1]);
+                    s = hostaes::xorb(s, prev);
                     prev = c; lastc = c;
-                    uint8_t ob[16]; _mm_storeu_si128((__m128i*)ob, s);
+                    uint8_t ob[16]; hostaes::store(ob, s);
                     if (verify) std::memcpy(&out[b * 16], ob, 16);
                     else mem_.write(dst + b * 16, ob, 16);
                 }
             } catch (...) { ok = false; }
             if (ok && g_aes_skip) {
-                uint8_t ivb[16]; _mm_storeu_si128((__m128i*)ivb, lastc);
+                uint8_t ivb[16]; hostaes::store(ivb, lastc);
                 try { mem_.write(iv, ivb, 16); } catch (...) {}
                 regs[RAX] = dst;
                 try { rip = mem_.read64(sp); regs[RSP] = sp + 8; ++instructions_executed; } catch (...) { return; }
