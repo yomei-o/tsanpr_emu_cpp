@@ -11,7 +11,6 @@
 
 # Local backup copy of the original emulator binary
 backup/x86emu.orig.exe
-wasm/*.wasm
 wasm-emu/x86emu.wasm
 wasm-emu/*.log
 wasm-emu/host.oracle
