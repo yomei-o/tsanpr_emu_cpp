@@ -5,17 +5,43 @@ model run in a browser/node — actual inference, not a fixed-value stub.
 
 - `build.sh` — link `emu/src/*.cpp` to `x86emu.js` + `x86emu.wasm` (Emscripten).
 - Run under Node with real filesystem access (NODERAWFS):
-  `node wasm-emu/x86emu.js "$PWD/anpr.exe"` (absolute path is required so the
-  guest's `baseDir()` resolves `engine/tsanpr.dll`).
 
-Status: the WASM emulator loads `tsanpr.dll`, resolves `anpr_initialize`, and
-reaches the licence check. On a real Windows host the licence passes; off-Windows
-(browser/node) there is no WMI/registry/HID, so the machine-fingerprint inputs
-must be supplied as captured "host oracle" data for the licence to validate — see
-the record/replay work in the emulator hooks. Inference itself is correct but very
-slow under the interpreter (hours), the same as the native emulated run.
+      EMU_GEMM_SKIP=1 EMU_ZERO_HOOK=1 EMU_STDOUT_TTY=1 \
+      node wasm-emu/x86emu.js \
+        --pnf "C:\\Windows\\inf\\vxd8.PNF=$PWD/oracle_vxd8_pnf.txt" \
+        --iftable "$PWD/oracle_iftable2.txt" --wmi "$PWD/oracle_wmi.txt" \
+        --registry "$PWD/backup/policies1.reg" --registry "$PWD/backup/policies2.reg" \
+        "$PWD/anpr.exe"
 
-`.gitignore` keeps the large `x86emu.wasm` out unless you build it locally.
+  The flags come **before** the guest path (everything after `anpr.exe` is the
+  guest's argv). The guest path is absolute so `baseDir()` resolves
+  `engine/tsanpr.dll`. The four oracle flags are the same as the native run.
+
+Status: **it passes and recognises plates.** With the four oracles the WASM
+emulator loads `tsanpr.dll` (46 MB) and the encrypted 167 MB model, derives the
+fingerprint `73e3e41855fba8d949120fe4ac51b3f4`, passes `anpr_initialize`, and runs
+inference — the full `多摩500さ4649` … `越谷300ち7985` set, all three images and
+the detection modes, identical to the native run. On node (Apple M2): **~20 min**
+for everything, peak RSS ~1.3 GB (first plate ~3 min). That is only ~1.8× the
+native emulated run, because `EMU_GEMM_SKIP`'s 4×8 tile is plain C++ and compiles
+to wasm too; the interpreted remainder is the rest of the gap.
+
+Note `EMU_AES_SKIP` does **nothing** under wasm — `host_aes.h` defines no host AES
+there, so the CBC hook is compiled out and the 167 MB decrypt falls to the
+software byte loop (a few minutes). Everything else is unchanged from native.
+
+`.gitignore` keeps the large `x86emu.wasm` out unless you build it locally; the
+`x86emu.js` glue is committed.
+
+## Browser (not wired yet)
+
+This build is `NODERAWFS=1`, i.e. node-only — it reads the engine, model and
+oracles straight from the local filesystem. A browser build needs those files in
+MEMFS instead (a non-NODERAWFS build with the files preloaded) and a small page
+that sets the argv and shows stdout. The blocker for hosting it on GitHub Pages is
+the model: `tsanpr-2512M.eon` is 167 MB (Git LFS, over GitHub's 100 MB per-file
+limit), which Pages does not serve, so the browser demo would need the model
+hosted elsewhere (or split). Node is the way to run the real engine today.
 
 ## Host-oracle record/replay (real inference off-Windows)
 
