@@ -1,12 +1,17 @@
 #include <cstdio>
 #include <cstring>
 
+#include "files.h"
 #include "loader.h"
 
 namespace x86emu {
 
 std::vector<uint8_t> read_file(const std::string& path) {
-    std::FILE* fp = std::fopen(path.c_str(), "rb");
+    // Through the same guest->host translation every other open uses: a PE
+    // guest spells its own module paths with backslashes, which are separators
+    // on a Windows host and literal characters everywhere else.
+    const std::string host = FileTable::host_path(path);
+    std::FILE* fp = std::fopen(host.c_str(), "rb");
     if (!fp) throw LoadError("cannot open " + path);
     std::fseek(fp, 0, SEEK_END);
     long size = std::ftell(fp);
