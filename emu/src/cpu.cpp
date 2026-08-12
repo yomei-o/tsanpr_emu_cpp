@@ -2079,7 +2079,13 @@ void Cpu::step() {
             uint64_t data = (cap <= 15) ? o : mem_.read_sized(o, 8);
             char h[9] = {0};
             for (int i = 0; i < 8; ++i) h[i] = (char)mem_.read_sized(data + i, 1);
-            if (h[0] == 'd' && h[1] == '4' && h[2] == 'd' && h[3] == '1') {
+            // Which fingerprint to look for: EMU_FIND's own value when it is one
+            // (EMU_FIND=674a), else the value this was first written against.  It
+            // is machine-specific by nature, so hard-coding one made the tool work
+            // on exactly one machine.
+            const char* want = std::getenv("EMU_FIND");
+            if (!want || std::strlen(want) < 4) want = "d4d1";
+            if (h[0] == want[0] && h[1] == want[1] && h[2] == want[2] && h[3] == want[3]) {
                 found = true;
                 std::fprintf(stderr, "[find] fingerprint at +%03x rip=%llx; live frame strings:\n",
                              fo, (unsigned long long)start);
