@@ -88,6 +88,11 @@ public:
         // answer stays "not present", which is what it was before.  Reads only,
         // for the same reason registry_write exists.
         std::vector<std::string> registry_files;
+        // WMI answers to serve where there is no WMI to ask - the rows a Windows
+        // host would have returned, carried as data, the same way registry_files
+        // carries its keys.  Empty means an enumeration finds nothing, which is
+        // what it meant before and is a real answer on a machine that has none.
+        std::vector<std::string> wmi_files;
         // Control ids to send the dialog as WM_COMMAND once it has initialised.
         // With no screen there is no one to click anything, so a dialog-driven
         // program otherwise only ever gets as far as its first dialog.

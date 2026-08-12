@@ -32,6 +32,7 @@ void usage() {
                  "      --registry-write let the guest write the host's registry\n"
                  "      --registry F     answer registry reads from the .reg export F\n"
                  "                       (repeatable; hosts with no registry of their own)\n"
+                 "      --wmi F          answer WMI queries from the table in F\n"
                  "      --dialog-command ID  send a dialog WM_COMMAND ID after it opens\n"
                  "      --save-state F   write the guest's state to F and stop\n"
                  "      --save-at N      ...after N instructions (default: at once)\n"
@@ -89,6 +90,12 @@ int main(int argc, char** argv) {
                 return 2;
             }
             opt.registry_files.push_back(argv[++i]);
+        } else if (a == "--wmi") {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "%s needs an answer file\n", a.c_str());
+                return 2;
+            }
+            opt.wmi_files.push_back(argv[++i]);
         } else if (a == "--dialog-command") {
             if (i + 1 >= argc) {
                 std::fprintf(stderr, "%s needs a control id\n", a.c_str());

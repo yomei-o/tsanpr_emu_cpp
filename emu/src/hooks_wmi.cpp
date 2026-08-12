@@ -154,6 +154,7 @@ bool host_wmi_query(const std::string& wql,
     return true;
 }
 
+
 // The columns a "SELECT a,b FROM c" asks for, so each can be read back by name.
 std::vector<std::string> selected_columns(const std::string& wql) {
     size_t select = wql.find("SELECT ");
@@ -176,6 +177,72 @@ std::vector<std::string> selected_columns(const std::string& wql) {
 }
 
 #endif  // _WIN32
+
+#if !defined(_WIN32)
+// The answers to serve where there is no WMI to ask, carried as data.
+//
+// One row per line: a substring the query must contain, then the properties.
+//
+//     Win32_BaseBoard                                    <- matches, no rows
+//     Win32_Processor  Name=virt-9.1 ProcessorId=0000000000000000
+//     GUID='{5C737FB0  DeviceID=0                        <- a WHERE clause row
+//
+// The match is a plain case-insensitive substring of the WQL, which is enough to
+// pick a class and, where a query names one, a particular instance.  A line with
+// no properties says "this query matches nothing", which is a real answer and the
+// one Win32_BaseBoard gives on a virtual machine.
+struct WmiRow {
+    std::string match;
+    std::map<std::string, Value> props;
+};
+
+std::vector<WmiRow>& wmi_table() {
+    static std::vector<WmiRow> table;
+    return table;
+}
+
+std::string wmi_lower(std::string v) {
+    for (char& c : v)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return v;
+}
+
+void load_wmi_answers(const std::string& path) {
+    std::FILE* fp = std::fopen(path.c_str(), "rb");
+    if (!fp) {
+        std::fprintf(stderr, "[wmi] cannot open %s\n", path.c_str());
+        return;
+    }
+    char line[2048];
+    int n = 0;
+    while (std::fgets(line, sizeof line, fp)) {
+        std::string text(line);
+        while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+        size_t b = text.find_first_not_of(" \t");
+        if (b == std::string::npos || text[b] == '#') continue;
+        text = text.substr(b);
+        WmiRow row;
+        size_t at = text.find_first_of(" \t");
+        row.match = wmi_lower(text.substr(0, at));
+        while (at != std::string::npos) {
+            size_t s2 = text.find_first_not_of(" \t", at);
+            if (s2 == std::string::npos) break;
+            at = text.find_first_of(" \t", s2);
+            std::string pair = text.substr(s2, at == std::string::npos ? at : at - s2);
+            size_t eq = pair.find('=');
+            if (eq == std::string::npos) continue;
+            Value v;
+            v.vt = 8;  // VT_BSTR: every property this serves is text
+            v.text = pair.substr(eq + 1);
+            row.props[pair.substr(0, eq)] = v;
+        }
+        wmi_table().push_back(std::move(row));
+        ++n;
+    }
+    std::fclose(fp);
+    std::fprintf(stderr, "[wmi] %s: %d row(s)\n", path.c_str(), n);
+}
+#endif  // !_WIN32
 
 
 // HRESULTs a WMI caller distinguishes between.
@@ -216,6 +283,9 @@ std::string read_bstr(Emulator& e, uint64_t p) {
 }  // namespace
 
 void Emulator::install_wmi_hooks() {
+#if !defined(_WIN32)
+    for (const std::string& f : options().wmi_files) load_wmi_answers(f);
+#endif
     auto state = std::make_shared<WmiState>();
 
     // Every slot is a hook; the ones with no implementation answer E_NOTIMPL,
@@ -321,6 +391,22 @@ void Emulator::install_wmi_hooks() {
         std::vector<std::map<std::string, Value>> rows;
         if (host_wmi_query(query, rows, selected_columns(query))) {
             e.log_call("  -> %u row(s) from the host", static_cast<unsigned>(rows.size()));
+            state->objects[obj].rows = std::move(rows);
+        }
+#else
+        // No WMI to ask: serve whatever the answer table has for this query.  With
+        // no table the enumeration stays empty, exactly as before.
+        std::string haystack = wmi_lower(query);
+        std::vector<std::map<std::string, Value>> rows;
+        bool matched = false;
+        for (const WmiRow& row : wmi_table()) {
+            if (row.match.empty() || haystack.find(row.match) == std::string::npos) continue;
+            matched = true;
+            if (!row.props.empty()) rows.push_back(row.props);
+        }
+        if (matched) {
+            e.log_call("  -> %u row(s) from the answer table",
+                       static_cast<unsigned>(rows.size()));
             state->objects[obj].rows = std::move(rows);
         }
 #endif

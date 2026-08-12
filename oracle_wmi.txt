@@ -1,0 +1,29 @@
+# The WMI answers the licence path reads, as recorded in readme.md ("判定の流れ").
+#
+# Off Windows there is no WMI to ask and an empty enumeration is what the guest
+# gets - which is a real answer, but not the one the machine this was brought up
+# on gives.  These are that machine's, carried as data:
+#
+#   x86emu --wmi oracle_wmi.txt --registry backup/policies1.reg \
+#          --registry backup/policies2.reg anpr.exe
+#
+# One row per line: a case-insensitive substring the query must contain, then the
+# properties as name=value.  A line with no properties means the query matches and
+# finds nothing, which is what Win32_BaseBoard answers on a virtual machine.
+#
+# Values may not contain spaces.  Missing from this file, and not recorded
+# anywhere, is the interface table GetIfTable2 returns (28 interfaces there) and
+# the two adapter GUIDs the readme elides - both feed the fingerprint, so the value
+# name derived with this file alone is not expected to be the one the licence
+# record is under.
+
+# SELECT Product,SerialNumber FROM Win32_BaseBoard  ->  0 row(s)
+Win32_BaseBoard
+
+# SELECT Name,ProcessorId FROM Win32_Processor
+Win32_Processor    Name=virt-9.1  ProcessorId=0000000000000000
+
+# SELECT ... FROM win32_NetworkAdapter WHERE GUID='{...}'  ->  DeviceID
+# The readme elides both GUIDs, so these match on as much of each as it records.
+GUID='{5C737FB0    DeviceID=0
+GUID='{B97D8E86    DeviceID=11
