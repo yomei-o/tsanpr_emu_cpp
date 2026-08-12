@@ -82,6 +82,12 @@ public:
         // Let the guest write to the host's registry.  Off by default: a write
         // outlives the run and nothing here undoes it, so it takes saying so.
         bool registry_write = false;
+        // Registry exports (regedit .reg files) to answer the guest's reads from
+        // on a host that has no registry of its own.  A Windows host bridges to
+        // its own instead and ignores these; everywhere else, without them the
+        // answer stays "not present", which is what it was before.  Reads only,
+        // for the same reason registry_write exists.
+        std::vector<std::string> registry_files;
         // Control ids to send the dialog as WM_COMMAND once it has initialised.
         // With no screen there is no one to click anything, so a dialog-driven
         // program otherwise only ever gets as far as its first dialog.
