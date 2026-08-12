@@ -33,15 +33,31 @@ software byte loop (a few minutes). Everything else is unchanged from native.
 `.gitignore` keeps the large `x86emu.wasm` out unless you build it locally; the
 `x86emu.js` glue is committed.
 
-## Browser (not wired yet)
+## Browser (`web/`)
 
-This build is `NODERAWFS=1`, i.e. node-only — it reads the engine, model and
-oracles straight from the local filesystem. A browser build needs those files in
-MEMFS instead (a non-NODERAWFS build with the files preloaded) and a small page
-that sets the argv and shows stdout. The blocker for hosting it on GitHub Pages is
-the model: `tsanpr-2512M.eon` is 167 MB (Git LFS, over GitHub's 100 MB per-file
-limit), which Pages does not serve, so the browser demo would need the model
-hosted elsewhere (or split). Node is the way to run the real engine today.
+`web/` is the browser build and a UI page — the same emulator, real engine, real
+inference, in a tab. It recognises the sample plates (verified: `多摩500さ4649` …).
+
+- `build_web.sh` — like `build.sh` but MEMFS instead of NODERAWFS, `MODULARIZE` +
+  `EXPORT_NAME=createX86emu`, `INVOKE_RUN=0` so the page populates the filesystem
+  and sets argv/env before calling `main`. Outputs `web/x86emu.js` + `web/x86emu.wasm`.
+- `web/index.html` — fetches `anpr.exe`, `tsanpr.dll`, the four oracle files and the
+  sample images into MEMFS, sets `EMU_GEMM_SKIP` / `EMU_ZERO_HOOK` / `EMU_STDOUT_TTY`
+  via `Module.ENV`, and runs with the oracle flags before the guest path. Plates
+  stream into the page as they are recognised.
+
+**The model is not fetched** — `tsanpr-2512M.eon` is 167 MB (Git LFS, over GitHub's
+100 MB per-file limit) and Pages does not serve LFS content. The page has the user
+download it from GitHub once and pick it with a file input; it stays in the tab.
+Everything else is under 100 MB and serves straight from Pages.
+
+Run it:
+
+    (cd "$(git rev-parse --show-toplevel)" && python3 -m http.server 8000)
+    # open http://localhost:8000/wasm-emu/web/  (or the GitHub Pages URL)
+
+Expect ~1.3 GB tab memory and a few minutes per run — session build dominates, and
+`EMU_AES_SKIP` is a no-op under wasm (software AES for the 167 MB decrypt).
 
 ## Host-oracle record/replay (real inference off-Windows)
 

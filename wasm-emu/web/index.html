@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TS-ANPR — real engine in WebAssembly</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem;
+         max-width: 900px; margin-inline: auto; }
+  h1 { font-size: 1.3rem; margin: 0 0 .3rem; }
+  .sub { opacity: .7; margin: 0 0 1.2rem; }
+  fieldset { border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+             border-radius: 8px; margin: 0 0 1rem; padding: .8rem 1rem; }
+  legend { padding: 0 .4rem; opacity: .7; font-size: .85rem; }
+  label { display: inline-flex; align-items: center; gap: .4rem; margin-right: 1rem; }
+  button { font: inherit; padding: .5rem 1.1rem; border-radius: 7px; cursor: pointer;
+           border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+           background: color-mix(in srgb, currentColor 8%, transparent); }
+  button:disabled { opacity: .5; cursor: default; }
+  #plates { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
+  .plate { font-size: 1.25rem; font-weight: 600; padding: .35rem .7rem; border-radius: 6px;
+           background: color-mix(in srgb, green 18%, transparent); }
+  progress { width: 100%; height: .5rem; }
+  #log { white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace;
+         background: color-mix(in srgb, currentColor 6%, transparent); border-radius: 8px;
+         padding: .8rem; max-height: 340px; overflow: auto; }
+  .warn { color: #c60; }
+  select, input[type=file] { font: inherit; }
+</style>
+</head>
+<body>
+  <h1>TS-ANPR — 本物のエンジンを WebAssembly で</h1>
+  <p class="sub">固定値スタブではありません。実際の <code>tsanpr.dll</code>(46&nbsp;MB) と
+  暗号化モデル(167&nbsp;MB) を x86 エミュレータごと WebAssembly で動かし、ブラウザ内で推論します。
+  ライセンス指紋はこのリポジトリ同梱のオラクルから再生します。</p>
+
+  <fieldset>
+    <legend>モデル</legend>
+    <p style="margin:.2rem 0">
+      ① モデル(167&nbsp;MB)をダウンロード →
+      <a id="dl" href="https://github.com/yomei-o/tsanpr_emu_cpp/raw/main/engine/tsanpr-2512M.eon" download>
+        tsanpr-2512M.eon</a>
+    </p>
+    <label>② 選択: <input type="file" id="model" accept=".eon"></label>
+    <div style="opacity:.6;font-size:.85rem;margin-top:.4rem">
+      モデルは大きく GitHub Pages では配信できない(Git&nbsp;LFS / 1ファイル100&nbsp;MB 制限)ので、
+      GitHub から一度ダウンロードして選んでください。ファイルはブラウザ内に留まり、どこにも
+      送信されません。</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>画像</legend>
+    <label><input type="radio" name="img" value="img/JP/licensePlate.jpg" checked> licensePlate.jpg（単板）</label>
+    <label><input type="radio" name="img" value="img/JP/multiple.jpg"> multiple.jpg（複数）</label>
+    <label><input type="radio" name="img" value="img/JP/surround.jpg"> surround.jpg（俯瞰）</label>
+    <br>
+    <label style="margin-top:.5rem">自前の画像: <input type="file" id="file" accept="image/*"></label>
+    <label>認識オプション:
+      <select id="opt">
+        <option value="">""（単板）</option>
+        <option value="vm">vm（複数）</option>
+        <option value="vms">vms（俯瞰）</option>
+        <option value="dmsr">dmsr（物体＋プレート）</option>
+      </select>
+    </label>
+  </fieldset>
+
+  <button id="run" disabled>読み込み中…</button>
+  <span id="status" style="margin-left:1rem;opacity:.7"></span>
+  <p style="opacity:.6;font-size:.85rem;margin:.6rem 0 0">
+    モデルが大きいので初回は数十 MB のダウンロードと、認識に数分かかります(セッション構築が支配的)。
+    タブで ~1.3&nbsp;GB 使います。</p>
+
+  <div id="plates"></div>
+  <progress id="prog" value="0" max="100" hidden></progress>
+  <pre id="log"></pre>
+
+<script type="module">
+import createX86emu from "./x86emu.js";
+
+const $ = (s) => document.querySelector(s);
+const logEl = $("#log"), platesEl = $("#plates"), statusEl = $("#status"), runBtn = $("#run");
+const REPO = "../../";                       // this page lives at wasm-emu/web/
+const log = (s, cls) => { const t = document.createTextNode(s + "\n");
+  if (cls) { const span = document.createElement("span"); span.className = cls; span.append(t); logEl.append(span); }
+  else logEl.append(t); logEl.scrollTop = logEl.scrollHeight; };
+
+// The files the guest and the emulator need, fetched once and cached in MEMFS.
+// Paths on the left are where they live in the repo; on the right, where they go
+// in the virtual filesystem.  The guest exe sits in /work so baseDir() resolves
+// /work/engine and /work/img; the oracle flags name the /work copies.
+// Everything under 100 MB is fetched from the server (works from GitHub Pages).
+// The 167 MB model is NOT here - Pages can't serve it - so it comes from the file
+// picker instead (see runtime below).
+const FILES = [
+  ["anpr.exe", "/work/anpr.exe"],
+  ["engine/tsanpr.dll", "/work/engine/tsanpr.dll"],
+  ["oracle_iftable2.txt", "/work/oracle_iftable2.txt"],
+  ["oracle_wmi.txt", "/work/oracle_wmi.txt"],
+  ["oracle_vxd8_pnf.txt", "/work/oracle_vxd8_pnf.txt"],
+  ["backup/policies1.reg", "/work/backup/policies1.reg"],
+  ["backup/policies2.reg", "/work/backup/policies2.reg"],
+  ["img/JP/licensePlate.jpg", "/work/img/JP/licensePlate.jpg"],
+  ["img/JP/multiple.jpg", "/work/img/JP/multiple.jpg"],
+  ["img/JP/surround.jpg", "/work/img/JP/surround.jpg"],
+];
+
+const cache = new Map();
+async function fetchInto(FS, repoPath, vpath, onprog) {
+  let bytes = cache.get(repoPath);
+  if (!bytes) {
+    const r = await fetch(REPO + repoPath);
+    if (!r.ok) throw new Error(`${repoPath}: HTTP ${r.status}`);
+    // Stream so the big model shows progress.
+    const total = +r.headers.get("content-length") || 0;
+    const reader = r.body.getReader(); const chunks = []; let got = 0;
+    for (;;) { const { done, value } = await reader.read(); if (done) break;
+      chunks.push(value); got += value.length; if (onprog && total) onprog(got / total); }
+    bytes = new Uint8Array(got); let at = 0; for (const c of chunks) { bytes.set(c, at); at += c.length; }
+    cache.set(repoPath, bytes);
+  }
+  const dir = vpath.slice(0, vpath.lastIndexOf("/"));
+  mkdirp(FS, dir);
+  FS.writeFile(vpath, bytes);
+  return bytes.length;
+}
+function mkdirp(FS, dir) {
+  const parts = dir.split("/").filter(Boolean); let p = "";
+  for (const seg of parts) { p += "/" + seg; try { FS.mkdir(p); } catch (e) { /* exists */ } }
+}
+
+let Module = null;
+
+async function boot() {
+  statusEl.textContent = "WASM を初期化中…";
+  // A fresh module per run: the emulator runs main once and exits, so re-running
+  // means re-instantiating.  Keep the factory options here.
+  return await createX86emu({ print: (s) => onStdout(s), printErr: (s) => log(s) });
+}
+
+function onStdout(s) {
+  // anpr writes plates and detection rows to stdout.  A plate line is Japanese
+  // text ending in digits; a detection row starts with "car,".
+  log(s);
+  if (/[\u3040-\u30ff\u4e00-\u9fff].*\d$/.test(s.trim()) && !s.startsWith("car,")) {
+    const span = document.createElement("span");
+    span.className = "plate"; span.textContent = s.trim();
+    platesEl.append(span);
+  }
+}
+
+async function run() {
+  const modelFile = $("#model").files[0];
+  if (!modelFile) { statusEl.textContent = "先にモデル(.eon)を選択してください"; return; }
+  runBtn.disabled = true; platesEl.replaceChildren(); logEl.textContent = "";
+  const prog = $("#prog"); prog.hidden = false; prog.value = 0;
+  try {
+    const M = await boot();
+    const FS = M.FS;
+    // The model comes from the picker (Pages can't host it); everything else is
+    // fetched from the server.
+    mkdirp(FS, "/work/engine");
+    statusEl.textContent = `モデル読み込み: ${modelFile.name}`;
+    FS.writeFile("/work/engine/tsanpr-2512M.eon", new Uint8Array(await modelFile.arrayBuffer()));
+    let done = 0;
+    for (const [repoPath, vpath] of FILES) {
+      statusEl.textContent = `読み込み: ${repoPath}`;
+      await fetchInto(FS, repoPath, vpath, (f) => { prog.value = ((done + f) / FILES.length) * 100; });
+      done++; prog.value = (done / FILES.length) * 100;
+    }
+    // A custom image overrides the selected sample, written where the guest looks.
+    const file = $("#file").files[0];
+    let imgPath = document.querySelector('input[name=img]:checked').value;
+    if (file) { const buf = new Uint8Array(await file.arrayBuffer());
+      mkdirp(FS, "/work/img/JP"); FS.writeFile("/work/img/JP/_user.jpg", buf);
+      imgPath = "img/JP/_user.jpg"; log(`(自前画像 ${file.name} を使用)`); }
+
+    // The env knobs that make it finish in minutes, and STDOUT_TTY so plates
+    // stream instead of buffering to the end.  AES_SKIP is a no-op in wasm.
+    M.ENV.EMU_GEMM_SKIP = "1"; M.ENV.EMU_ZERO_HOOK = "1"; M.ENV.EMU_STDOUT_TTY = "1";
+
+    statusEl.textContent = "推論中…（数分）";
+    prog.removeAttribute("value");                 // indeterminate
+    const t0 = performance.now();
+    // anpr.c takes no args for image choice - it iterates its own sample list -
+    // so the image radio is advisory here; the run recognises all three samples.
+    // The oracle flags come BEFORE the guest path (everything after is guest argv).
+    M.callMain([
+      "--pnf", "C:\\Windows\\inf\\vxd8.PNF=/work/oracle_vxd8_pnf.txt",
+      "--iftable", "/work/oracle_iftable2.txt",
+      "--wmi", "/work/oracle_wmi.txt",
+      "--registry", "/work/backup/policies1.reg",
+      "--registry", "/work/backup/policies2.reg",
+      "/work/anpr.exe",
+    ]);
+    const secs = ((performance.now() - t0) / 1000).toFixed(0);
+    statusEl.textContent = `完了（${secs}s）`;
+  } catch (e) {
+    log("エラー: " + (e && e.message ? e.message : e), "warn");
+    statusEl.textContent = "失敗";
+  } finally {
+    prog.hidden = true; runBtn.disabled = false;
+  }
+}
+
+runBtn.addEventListener("click", run);
+runBtn.disabled = false; runBtn.textContent = "認識を実行";
+statusEl.textContent = "準備完了";
+</script>
+</body>
+</html>
