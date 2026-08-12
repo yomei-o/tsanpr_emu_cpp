@@ -23,7 +23,16 @@ Win32_BaseBoard
 # SELECT Name,ProcessorId FROM Win32_Processor
 Win32_Processor    Name=virt-9.1  ProcessorId=0000000000000000
 
-# SELECT ... FROM win32_NetworkAdapter WHERE GUID='{...}'  ->  DeviceID
-# The readme elides both GUIDs, so these match on as much of each as it records.
-GUID='{5C737FB0    DeviceID=0
-GUID='{B97D8E86    DeviceID=11
+# SELECT DeviceID FROM win32_NetworkAdapter WHERE GUID='{...}'
+#
+# The guest takes the GUID out of the interface table it was just handed, so which
+# GUIDs it asks about are that table's, not this host's - with wasm-emu/host.oracle
+# replayed it asks about {3DE5CB5B-3F9D-428F-A992-9B2454D18448}, which is in that
+# recorded table (at offset 43292 of both GetIfTable2Ex records).  The readme's
+# {5C737FB0-...} and {B97D8E86-...} are from an earlier run against a different
+# table and are not in this one, so matching on them answered nothing.
+#
+# One line for the class answers every adapter it asks about.  DeviceID here is a
+# placeholder: what the recorded machine's win32_NetworkAdapter said for each
+# adapter is not written down anywhere, and it is an input to the fingerprint.
+win32_NetworkAdapter   DeviceID=0
