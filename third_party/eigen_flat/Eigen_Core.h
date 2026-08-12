@@ -211,10 +211,10 @@ using std::ptrdiff_t;
   #include "src/Core/arch/AltiVec/MathFunctions.h"
   #include "src/Core/arch/AltiVec/Complex.h"
 #elif defined EIGEN_VECTORIZE_NEON
-  #include "src/Core/arch/NEON/PacketMath.h"
-  #include "src/Core/arch/NEON/TypeCasting.h"
-  #include "src/Core/arch/NEON/MathFunctions.h"
-  #include "src/Core/arch/NEON/Complex.h"
+  #include "Eigen_src_Core_arch_NEON_PacketMath.h"
+  #include "Eigen_src_Core_arch_NEON_TypeCasting.h"
+  #include "Eigen_src_Core_arch_NEON_MathFunctions.h"
+  #include "Eigen_src_Core_arch_NEON_Complex.h"
 #elif defined EIGEN_VECTORIZE_SVE
   #include "src/Core/arch/SVE/PacketMath.h"
   #include "src/Core/arch/SVE/TypeCasting.h"
@@ -349,7 +349,7 @@ using std::ptrdiff_t;
 #if defined(EIGEN_VECTORIZE_ALTIVEC) || defined(EIGEN_VECTORIZE_VSX)
   #include "src/Core/arch/AltiVec/MatrixProduct.h"
 #elif defined EIGEN_VECTORIZE_NEON
-  #include "src/Core/arch/NEON/GeneralBlockPanelKernel.h"
+  #include "Eigen_src_Core_arch_NEON_GeneralBlockPanelKernel.h"
 #endif
 
 #include "Eigen_src_Core_BooleanRedux.h"
