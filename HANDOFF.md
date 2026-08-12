@@ -73,11 +73,29 @@ none in the readme:
   returns the host clock now; if the trial's window is fixed, freezing this to a time
   inside it is the next thing to try (an emulator knob, not a machine value).
 
-NEXT on the aarch64 box: freeze `GetSystemTimePreciseAsFileTime` to a time within the
-trial and see if `(105)` clears.  If it does not, the `.PNF` contents are the input to
-capture on the licensed machine.  Questions for the licensed-machine session: do
-`C:\Windows\inf\vxd8.PNF` / `vxd.PNF` exist there, and does that Policies key have a
-`profile` value?
+### Ruled out and pinned down (aarch64, this session)
+
+- **Not the clock.** `guest_time_now()` is already frozen to 2026-08-11 (a date the
+  trial was valid), and `EMU_FAKE_TIME` sweeps over 2024-06, 2025-01, 2025-08 and
+  2026-07 all still give `(105)`.  Trial expiry is not the gate.
+- **`C:\Windows\inf\vxd8.PNF` and `vxd.PNF` ARE a real input.** With the files
+  absent the engine calls `CreateFile` and moves on.  Create them (they resolve to
+  `./C:/Windows/inf/...` with no sysroot) and the trace grows a `GetFileType`,
+  `SetFilePointerEx` (seek-to-end for the size) and **`ReadFile`** on each - the
+  engine reads their contents.  Still `(105)` with placeholder contents, so the
+  bytes matter: a real Windows `.PNF` is a binary precompiled-INF, and a licence
+  hidden in one would be there.  **This is the next input to capture on the licensed
+  machine** - `vxd8.PNF` and `vxd.PNF` from its `C:\Windows\inf\`, committed as
+  an oracle the way the interface table was.
+- **`profile` value** under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies`
+  is read once and is "not present" here; it is not in the record's copy of that key
+  either, so it is probably absent on the licensed machine too - lower priority than
+  the .PNF.
+
+**Questions for the licensed-machine session:** do `C:\Windows\inf\vxd8.PNF` and
+`vxd.PNF` exist there?  If so, commit them (or their hex) - they are read during
+`anpr_initialize` after the fingerprint lookup succeeds, and their contents decide
+the verdict.  Does that Policies key have a `profile` value?
 
 ## TODAY'S GOAL
 Feed **uniform fixed values** for every fingerprint input (zero host reads) so
