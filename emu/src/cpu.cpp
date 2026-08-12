@@ -7,6 +7,7 @@
 #include "cpu.h"
 #include "host_aes.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>

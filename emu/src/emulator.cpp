@@ -425,6 +425,34 @@ bool Emulator::dispatch_hook(uint64_t addr) {
         oracle = false;
     if (host_mode && idx != 0 && oracle) {
         if (host_mode == 2) {
+            // EMU_HOSTREP_POSITIONAL restores the original matcher - the Nth record
+            // answers the Nth oracle call - for a run that was tuned against it.
+            static const bool positional = std::getenv("EMU_HOSTREP_POSITIONAL") != nullptr;
+            if (positional) {
+                if (g_hostrep_pos < g_hostrep.size()) {
+                    const HostRec& r = g_hostrep[g_hostrep_pos++];
+                    if (r.name != h.name)
+                        std::fprintf(stderr, "[hostrep] desync at %zu: expected '%s' got '%s'\n",
+                                     g_hostrep_pos - 1, r.name.c_str(), h.name.c_str());
+                    uint64_t page = ~0ull;
+                    for (const auto& w : r.writes) {
+                        if ((w.first >> 12) != page) { mem.map(w.first & ~0xFFFull, 4096); page = w.first >> 12; }
+                        mem.write8(w.first, w.second);
+                    }
+                    set_result(r.rax);
+                    if (r.misc_next > misc_next_) misc_next_ = r.misc_next;
+                    if (r.heap_next > heap_next_) heap_next_ = r.heap_next;
+                    if (r.mmap_next > mmap_next_) mmap_next_ = r.mmap_next;
+                } else {
+                    std::fprintf(stderr, "[hostrep] out of records at '%s'\n", h.name.c_str());
+                    h.fn(*this);
+                }
+                if (cpu_->halted) return true;
+                uint64_t back = cpu_->pop();
+                if (!is64()) cpu_->regs[RSP] += static_cast<uint64_t>(h.stdcall_bytes);
+                cpu_->rip = back;
+                return true;
+            }
             auto queue = g_hostrep_by_name.find(h.name);
             if (queue != g_hostrep_by_name.end() && !queue->second.empty()) {
                 size_t& taken = g_hostrep_taken[h.name];
