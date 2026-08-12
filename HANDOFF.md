@@ -42,9 +42,42 @@ Both documented gates are behind us: this is the native value name, not the
 `9ef9aab8…` the readme's x86emu derived, and `EMU_STOIOBJ` shows both tokens
 healthy ("0" and "11") where gate 2 used to see an empty second one.
 
-**It still ends in `(105)`, after the record is read.** So there is a check beyond
-the lookup that has not been characterised yet. Next: find where the engine turns
-the 245-byte blob plus the 32-char value into a verdict, and what it compares.
+**It still ends in `(105)`, after the record is read** - and the post-lookup
+sequence is now traced (`x86emu -c`, from the `RegQueryValueEx(73e3e418...)` hit to
+`exit`).  In order, the engine:
+
+1. `RegQueryValueEx(73e3e41855fba8d949120fe4ac51b3f4)` -> **66 bytes** (the record
+   is `faa5bd0a56fedfe114d0622157b97d65`, a 32-char value; 66 bytes is it as UTF-16
+   + terminator).
+2. `GetWindowsDirectoryW`, then `CreateFile(C:\Windows\inf\vxd8.PNF)` -> not found.
+3. `RegOpenKeyEx(SOFTWARE\Microsoft\Windows\CurrentVersion\Policies)` then
+   `RegQueryValueEx("profile")` -> not present.  (`profile` is not in the record's
+   `CurrentVersion\Policies` key, which holds only the fingerprint value name - so
+   "not present" may well be what the licensed machine answers too.)
+4. `GetWindowsDirectoryW`, `CreateFile(C:\Windows\inf\vxd.PNF)` -> not found.
+5. `GetSystemTimePreciseAsFileTime` x3 - a time read, i.e. a trial-expiry check.
+6. one `__stdio_common_vfprintf`, then `exit`, code 0, `(105)`.
+
+No fault, no rip=0: the engine reaches its own "no" and prints it.  So beyond the
+value-name lookup there are up to three more inputs, none recorded anywhere and
+none in the readme:
+
+- **`C:\Windows\inf\vxd8.PNF` and `vxd.PNF`** - Windows precompiled-INF files.
+  A licence hidden in one (the way the primary one hides in a Policies value) would
+  be read here.  Does the licensed machine have these, and what is in them?  If they
+  are genuinely absent there, "not found" is correct and this is not the gate.
+- **`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies` value `profile`** -
+  same question; likely absent on the licensed machine too.
+- **the current time** vs whatever expiry the 66-byte record encodes - the most
+  likely actual gate, since a trial licence expires.  `GetSystemTimePreciseAsFileTime`
+  returns the host clock now; if the trial's window is fixed, freezing this to a time
+  inside it is the next thing to try (an emulator knob, not a machine value).
+
+NEXT on the aarch64 box: freeze `GetSystemTimePreciseAsFileTime` to a time within the
+trial and see if `(105)` clears.  If it does not, the `.PNF` contents are the input to
+capture on the licensed machine.  Questions for the licensed-machine session: do
+`C:\Windows\inf\vxd8.PNF` / `vxd.PNF` exist there, and does that Policies key have a
+`profile` value?
 
 ## TODAY'S GOAL
 Feed **uniform fixed values** for every fingerprint input (zero host reads) so
