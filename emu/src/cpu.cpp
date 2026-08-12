@@ -1569,6 +1569,34 @@ void Cpu::step() {
         }
     }
 
+    // The CRT/MLAS SSE memcpy (entry 0x22D31D0): rcx=dst, rdx=src, r8=len,
+    // returns rax=dst.  Its 128-byte movdqu/movdqa unrolled loop at +0x22D3660 is
+    // ~20% of the model-load profile - the 167 MB model copied around during the
+    // protobuf parse and session build.  Each 128 bytes is 21 interpreted
+    // instructions; replace the whole call with one native copy.  memcpy's
+    // contract is non-overlapping, so a forward chunked copy matches it.
+    // EMU_MEMCPY_SKIP=1.
+    static const bool g_memcpy_hook = std::getenv("EMU_MEMCPY_SKIP") != nullptr;
+    if (g_memcpy_hook && start == 0x1423d31d0ull) {
+        uint64_t sp = regs[RSP], dst = regs[RCX], src = regs[RDX], n = regs[8];
+        if (n <= 0x40000000ull) {                         // <=1 GiB, sane
+            try {
+                uint8_t buf[8192];
+                for (uint64_t done = 0; done < n;) {
+                    uint64_t chunk = n - done < sizeof buf ? n - done : sizeof buf;
+                    mem_.read(src + done, buf, chunk);
+                    mem_.write(dst + done, buf, chunk);
+                    done += chunk;
+                }
+                regs[RAX] = dst;
+                rip = mem_.read64(sp); regs[RSP] = sp + 8; ++instructions_executed;
+                static uint64_t mc = 0; if (((++mc) & 0x3ffff) == 1)
+                    std::fprintf(stderr, "[memcpyhook] calls=%llu\n", (unsigned long long)mc);
+                return;
+            } catch (...) {}
+        }
+    }
+
 #if defined(X86EMU_HOST_AES)
     // AES-CBC decrypt native hook — the model-load bottleneck.  Function entry
     // 0x135A310 (emu 0x14145A310): crypt(src=rcx, dst=rdx, len=r8, key=r9,
